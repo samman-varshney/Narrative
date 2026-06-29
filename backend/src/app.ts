@@ -29,7 +29,7 @@ const limiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   store: new RedisStore({
-    sendCommand: (...args: string[]) => redis.call(...args),
+    sendCommand: redis.call.bind(redis) as any,
   }),
 });
 app.use('/api', limiter);

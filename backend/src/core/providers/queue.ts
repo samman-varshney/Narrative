@@ -12,7 +12,7 @@ export const QUEUES = {
 
 // Generic function to create a queue
 export const createQueue = (queueName: string) => {
-  return new Queue(queueName, { connection: redis });
+  return new Queue(queueName, { connection: redis as any });
 };
 
 // Generic function to create a worker
@@ -21,7 +21,7 @@ export const createWorker = (
   processor: (job: any) => Promise<any>
 ) => {
   const workerConnection = createRedisConnection();
-  const worker = new Worker(queueName, processor, { connection: workerConnection });
+  const worker = new Worker(queueName, processor, { connection: workerConnection as any });
 
   worker.on('completed', (job) => {
     logger.info({ jobId: job.id }, `Job completed in queue ${queueName}`);
