@@ -17,11 +17,24 @@ enum Role {
   ADMIN
 }
 
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
 enum BlogStatus {
   DRAFT
   PUBLISHED
   ARCHIVED
   DELETED
+}
+
+enum BlogVisibility {
+  PUBLIC
+  UNLISTED
+  PRIVATE
+  MEMBERS_ONLY
 }
 
 model User {
@@ -30,17 +43,23 @@ model User {
   passwordHash String
   name         String
   username     String  @unique
-  bio          String?
+  bio          String? @db.Text
   avatar       String?
-  socialLinks  Json?
-  website      String?
   role         Role    @default(USER)
-  isVerified   Boolean @default(false)
-  isDeleted    Boolean @default(false)
+
+  status     UserStatus @default(ACTIVE)
+  isVerified Boolean    @default(false)
+  verifiedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // 1:1 Relations
+  profile          UserProfile?
+  developerProfile DeveloperProfile?
+  settings         UserSettings?
+
+  // 1:N Relations
   blogs     Blog[]
   comments  Comment[]
   likes     Like[]
@@ -51,16 +70,83 @@ model User {
 
   notifications Notification[]
   sessions      Session[]
+  skills        UserSkill[]
+
+  @@index([username])
+  @@index([name])
+}
+
+model UserProfile {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  location   String?
+  occupation String?
+  company    String?
+}
+
+model DeveloperProfile {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  github        String?
+  linkedin      String?
+  portfolio     String?
+  stackoverflow String?
+  leetcode      String?
+  codeforces    String?
+  hackerrank    String?
+  x             String?
+}
+
+model Skill {
+  id    String      @id @default(cuid())
+  name  String      @unique
+  users UserSkill[]
+}
+
+model UserSkill {
+  userId  String
+  skillId String
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  skill   Skill  @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@id([userId, skillId])
+}
+
+model UserSettings {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  theme    String @default("system")
+  language String @default("en")
+  timezone String @default("UTC")
+
+  isPrivate    Boolean @default(false)
+  hideEmail    Boolean @default(true)
+  hideActivity Boolean @default(false)
+
+  emailPreferences        Json?
+  notificationPreferences Json?
 }
 
 model Blog {
-  id         String     @id @default(cuid())
+  id         String  @id @default(cuid())
   title      String
-  slug       String     @unique
+  slug       String  @unique
   subtitle   String?
-  content    String?    @db.Text
+  content    Json?
   coverImage String?
-  status     BlogStatus @default(DRAFT)
+
+  status     BlogStatus     @default(DRAFT)
+  visibility BlogVisibility @default(PUBLIC)
+
+  readingTimeMinutes Int @default(0)
+  wordCount          Int @default(0)
+  charCount          Int @default(0)
 
   authorId String
   author   User   @relation(fields: [authorId], references: [id])
@@ -69,6 +155,7 @@ model Blog {
   updatedAt   DateTime  @updatedAt
   publishedAt DateTime?
 
+  seo       BlogSEO?
   comments  Comment[]
   likes     Like[]
   bookmarks Bookmark[]
@@ -79,6 +166,19 @@ model Blog {
   @@index([slug])
   @@index([authorId])
   @@index([status])
+}
+
+model BlogSEO {
+  id              String  @id @default(cuid())
+  blogId          String  @unique
+  blog            Blog    @relation(fields: [blogId], references: [id], onDelete: Cascade)
+  metaTitle       String?
+  metaDescription String?
+  canonicalUrl    String?
+  ogTitle         String?
+  ogDescription   String?
+  ogImage         String?
+  twitterCard     String?
 }
 
 model Category {

@@ -9,6 +9,7 @@ import { redis } from './core/providers/redis';
 import { globalErrorHandler } from './core/middlewares/errorHandler';
 import { logger } from './core/utils/logger';
 import { authRoutes } from './modules/auth/auth.routes';
+import { userRoutes } from './modules/user/user.routes';
 
 const app: Application = express();
 
@@ -30,6 +31,7 @@ const limiter = rateLimit({
   legacyHeaders: false,
   store: new RedisStore({
     sendCommand: redis.call.bind(redis) as any,
+    prefix: 'rl:global:', // Distinct namespace so it doesn't share counters with authLimiter
   }),
 });
 app.use('/api', limiter);
@@ -41,6 +43,7 @@ app.get('/health', (req: Request, res: Response) => {
 
 // Register Module Routes
 app.use('/api/v1/auth', authRoutes);
+app.use('/api/v1/users', userRoutes);
 
 // Global Error Handler
 app.use(globalErrorHandler);

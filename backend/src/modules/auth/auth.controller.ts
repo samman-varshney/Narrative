@@ -45,7 +45,7 @@ export class AuthController {
   async refresh(req: Request, res: Response) {
     const oldRefreshToken = req.cookies?.[COOKIE_CONFIG.REFRESH_TOKEN.name];
     if (!oldRefreshToken) {
-      return res.status(401).json({ success: false, error: { code: 'NO_TOKEN', message: 'No refresh token provided' } });
+      throw new AppError('No refresh token provided', 401, 'NO_TOKEN');
     }
 
     const { accessToken, refreshToken } = await authService.refreshTokens(oldRefreshToken, extractMetadata(req));

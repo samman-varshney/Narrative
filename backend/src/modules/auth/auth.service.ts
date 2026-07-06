@@ -38,13 +38,19 @@ export class AuthService {
 
   async login(data: LoginInput, metadata?: { deviceId?: string; userAgent?: string; ipAddress?: string }) {
     const user = await userRepository.findByEmail(data.email);
-    if (!user || user.isDeleted) {
+    if (!user || user.status === 'DELETED') {
       throw new AppError('Invalid email or password', 401, 'INVALID_CREDENTIALS');
     }
 
     const isPasswordValid = await passwordService.verify(user.passwordHash, data.password);
     if (!isPasswordValid) {
       throw new AppError('Invalid email or password', 401, 'INVALID_CREDENTIALS');
+    }
+
+    // Password is valid but the account may be banned. Checked after password
+    // verification so we don't leak account status to non-owners.
+    if (user.status === 'SUSPENDED') {
+      throw new AppError('Your account has been suspended', 403, 'ACCOUNT_SUSPENDED');
     }
 
     const payload: TokenPayload = { userId: user.id, role: user.role };
@@ -80,8 +86,9 @@ export class AuthService {
       }
 
       const user = await userRepository.findById(payload.userId);
-      if (!user || user.isDeleted) {
-        throw new AppError('User not found or deleted', 401, 'USER_NOT_FOUND');
+      if (!user || user.status !== 'ACTIVE') {
+        // Deleted or suspended accounts must not be able to mint fresh tokens.
+        throw new AppError('User not found or inactive', 401, 'USER_NOT_FOUND');
       }
 
       const newPayload: TokenPayload = { userId: user.id, role: user.role };

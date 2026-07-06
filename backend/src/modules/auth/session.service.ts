@@ -1,7 +1,6 @@
-import { PrismaClient, Session } from '@prisma/client';
+import { Session } from '@prisma/client';
 import { tokensService } from './tokens.service';
-
-const prisma = new PrismaClient();
+import { prisma } from '../../core/database/prisma';
 
 export class SessionService {
   /**
@@ -13,7 +12,7 @@ export class SessionService {
     metadata?: { deviceId?: string; userAgent?: string; ipAddress?: string }
   ): Promise<Session> {
     const refreshTokenHash = tokensService.hashRefreshToken(rawRefreshToken);
-    
+
     // Parse duration logic (hardcoded to 7 days for V1)
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 7);
@@ -35,7 +34,7 @@ export class SessionService {
    */
   async validateSession(rawRefreshToken: string): Promise<Session | null> {
     const refreshTokenHash = tokensService.hashRefreshToken(rawRefreshToken);
-    
+
     const session = await prisma.session.findUnique({
       where: { refreshTokenHash },
     });
@@ -62,8 +61,30 @@ export class SessionService {
     userId: string,
     metadata?: { deviceId?: string; userAgent?: string; ipAddress?: string }
   ): Promise<Session> {
-    await this.revokeSession(oldRawToken);
-    return this.createSession(userId, newRawToken, metadata);
+    const oldRefreshTokenHash = tokensService.hashRefreshToken(oldRawToken);
+    const newRefreshTokenHash = tokensService.hashRefreshToken(newRawToken);
+
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 7);
+
+    return prisma.$transaction(async (tx) => {
+      try {
+        await tx.session.delete({ where: { refreshTokenHash: oldRefreshTokenHash } });
+      } catch (e) {
+        // Ignore if not found
+      }
+
+      return tx.session.create({
+        data: {
+          userId,
+          refreshTokenHash: newRefreshTokenHash,
+          deviceId: metadata?.deviceId,
+          userAgent: metadata?.userAgent,
+          ipAddress: metadata?.ipAddress,
+          expiresAt,
+        },
+      });
+    });
   }
 
   /**
@@ -84,6 +105,25 @@ export class SessionService {
   async revokeAllSessions(userId: string): Promise<void> {
     await prisma.session.deleteMany({
       where: { userId },
+    });
+  }
+
+  /**
+   * Retrieves all active sessions for a user
+   */
+  async getUserSessions(userId: string) {
+    return prisma.session.findMany({
+      where: { userId, expiresAt: { gt: new Date() } },
+      orderBy: { lastUsedAt: 'desc' },
+      select: {
+        id: true,
+        deviceId: true,
+        userAgent: true,
+        ipAddress: true,
+        createdAt: true,
+        lastUsedAt: true,
+        expiresAt: true,
+      },
     });
   }
 }

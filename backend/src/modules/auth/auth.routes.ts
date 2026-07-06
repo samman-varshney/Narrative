@@ -4,15 +4,16 @@ import { validateRequest } from '../../core/middlewares/validateRequest';
 import { registerSchema, loginSchema, changePasswordSchema } from './auth.validator';
 import { catchAsync } from '../../core/utils/asyncHandler';
 import { requireAuth } from '../../core/middlewares/requireAuth';
+import { authLimiter } from '../../core/middlewares/rateLimiter';
 
 const router = Router();
 
 // Public routes
 router.post('/register', validateRequest(registerSchema), catchAsync(authController.register));
-router.post('/login', validateRequest(loginSchema), catchAsync(authController.login));
+router.post('/login', authLimiter, validateRequest(loginSchema), catchAsync(authController.login));
 router.post('/refresh', catchAsync(authController.refresh));
 
-router.post('/forgot-password', catchAsync(authController.forgotPassword));
+router.post('/forgot-password', authLimiter, catchAsync(authController.forgotPassword));
 router.post('/reset-password', catchAsync(authController.resetPassword));
 router.post('/verify-email', catchAsync(authController.verifyEmail));
 
