@@ -10,6 +10,7 @@ import { globalErrorHandler } from './core/middlewares/errorHandler';
 import { logger } from './core/utils/logger';
 import { authRoutes } from './modules/auth/auth.routes';
 import { userRoutes } from './modules/user/user.routes';
+import { mediaRoutes } from './modules/media/media.routes';
 
 const app: Application = express();
 
@@ -44,6 +45,7 @@ app.get('/health', (req: Request, res: Response) => {
 // Register Module Routes
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/users', userRoutes);
+app.use('/api/v1/media', mediaRoutes);
 
 // Global Error Handler
 app.use(globalErrorHandler);

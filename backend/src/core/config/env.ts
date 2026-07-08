@@ -5,17 +5,39 @@ import path from 'path';
 // Load variables based on NODE_ENV, default to .env
 dotenv.config({ path: path.resolve(process.cwd(), '.env'), quiet: true });
 
-const envSchema = z.object({
-  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
-  PORT: z.string().default('5000'),
-  DATABASE_URL: z.string().url('Must be a valid Postgres connection string'),
-  REDIS_URL: z.string().url('Must be a valid Redis connection string').default('redis://127.0.0.1:6379'),
-  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
-  JWT_ACCESS_SECRET: z.string().min(10, 'Access secret too short'),
-  JWT_REFRESH_SECRET: z.string().min(10, 'Refresh secret too short'),
-  JWT_ACCESS_EXPIRES_IN: z.string().default('15m'),
-  JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
-});
+const envSchema = z
+  .object({
+    NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+    PORT: z.string().default('5000'),
+    DATABASE_URL: z.string().url('Must be a valid Postgres connection string'),
+    REDIS_URL: z.string().url('Must be a valid Redis connection string').default('redis://127.0.0.1:6379'),
+    LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+    JWT_ACCESS_SECRET: z.string().min(10, 'Access secret too short'),
+    JWT_REFRESH_SECRET: z.string().min(10, 'Refresh secret too short'),
+    JWT_ACCESS_EXPIRES_IN: z.string().default('15m'),
+    JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
+
+    // Storage / Media
+    STORAGE_PROVIDER: z.enum(['local', 'cloudinary']).default('local'),
+    CLOUDINARY_CLOUD_NAME: z.string().optional(),
+    CLOUDINARY_API_KEY: z.string().optional(),
+    CLOUDINARY_API_SECRET: z.string().optional(),
+  })
+  .superRefine((data, ctx) => {
+    // Cloudinary credentials are only required when it is the active provider.
+    if (data.STORAGE_PROVIDER === 'cloudinary') {
+      const required = ['CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET'] as const;
+      for (const key of required) {
+        if (!data[key]) {
+          ctx.addIssue({
+            code: 'custom',
+            path: [key],
+            message: `${key} is required when STORAGE_PROVIDER is "cloudinary"`,
+          });
+        }
+      }
+    }
+  });
 
 const _env = envSchema.safeParse(process.env);
 

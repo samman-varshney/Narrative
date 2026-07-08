@@ -1,7 +1,8 @@
 import { userRepository } from './user.repository';
 import { AppError } from '../../core/exceptions/AppError';
 import { eventBus, EVENTS } from '../../core/events/eventBus';
-import { storageProvider } from '../../core/providers/storage/LocalStorageProvider'; // Ideally injected or resolved via DI
+import { activeStorageProvider } from '../../core/providers/storage';
+import { mediaService } from '../media/media.service';
 import {
   UpdateProfileInput,
   UpdateDeveloperProfileInput,
@@ -101,24 +102,41 @@ export class UserService {
     const user = await userRepository.findById(id);
     if (!user) throw new AppError('User not found', 404);
 
-    // Delete old avatar if exists
-    if (user.avatar) {
-      await storageProvider.delete(user.avatar).catch(() => {}); // ignore error if old avatar missing
+    // Media module is the single owner of file operations.
+    const media = await mediaService.uploadAvatar(id, { buffer, originalname: originalName, mimetype });
+
+    const previousMediaId = user.avatarMediaId;
+    await userRepository.update(id, {
+      avatar: media.secureUrl,
+      avatarMedia: { connect: { id: media.id } },
+    });
+
+    // Retire the previous avatar's Media record + storage asset via the Media
+    // lifecycle (soft-delete + provider cleanup) — no orphaned rows/files.
+    if (previousMediaId) {
+      await mediaService.deleteMedia(previousMediaId, id).catch(() => {});
+    } else if (user.avatar) {
+      // Legacy avatar (pre-FK) had no Media row — clean the raw URL best-effort.
+      await activeStorageProvider.delete(user.avatar).catch(() => {});
     }
 
-    const avatarUrl = await storageProvider.upload(buffer, originalName, mimetype);
-    await userRepository.update(id, { avatar: avatarUrl });
-
-    eventBus.emit(EVENTS.USER_AVATAR_UPDATED, { userId: id, avatarUrl });
-    return { avatarUrl };
+    eventBus.emit(EVENTS.USER_AVATAR_UPDATED, { userId: id, avatarUrl: media.secureUrl });
+    return { avatarUrl: media.secureUrl };
   }
 
   async deleteAvatar(id: string) {
     const user = await userRepository.findById(id);
     if (!user || !user.avatar) return;
 
-    await storageProvider.delete(user.avatar).catch(() => {});
-    await userRepository.update(id, { avatar: null });
+    const previousMediaId = user.avatarMediaId;
+    await userRepository.update(id, { avatar: null, avatarMedia: { disconnect: true } });
+
+    if (previousMediaId) {
+      await mediaService.deleteMedia(previousMediaId, id).catch(() => {});
+    } else {
+      // Legacy avatar with no Media row.
+      await activeStorageProvider.delete(user.avatar).catch(() => {});
+    }
 
     eventBus.emit(EVENTS.USER_AVATAR_UPDATED, { userId: id, avatarUrl: null });
   }

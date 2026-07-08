@@ -4,6 +4,8 @@ dotenv.config({ quiet: true });
 import app from './app';
 import { logger } from './core/utils/logger';
 import { redis } from './core/providers/redis';
+// Side-effect import: starts background workers (opens Redis connections eagerly).
+import './modules/media/media.worker';
 
 const PORT = process.env.PORT || 5000;
 

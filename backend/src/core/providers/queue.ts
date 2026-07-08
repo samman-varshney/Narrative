@@ -38,3 +38,4 @@ export const createWorker = (
 export const emailQueue = createQueue(QUEUES.EMAIL);
 export const notificationQueue = createQueue(QUEUES.NOTIFICATION);
 export const analyticsQueue = createQueue(QUEUES.ANALYTICS_FLUSH);
+export const mediaQueue = createQueue(QUEUES.MEDIA_PROCESSING);

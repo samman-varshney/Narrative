@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { MulterError } from 'multer';
 import { AppError } from '../exceptions/AppError';
 import { logger } from '../utils/logger';
 
@@ -17,6 +18,19 @@ export const globalErrorHandler = (
         message: err.message,
         details: err.details,
       },
+    });
+  }
+
+  // Multer surfaces client-side upload problems (oversized file, too many parts, etc.)
+  // as MulterError — these are operational 400s, not server faults.
+  if (err instanceof MulterError) {
+    const code = err.code === 'LIMIT_FILE_SIZE' ? 'FILE_TOO_LARGE' : 'UPLOAD_ERROR';
+    const message =
+      err.code === 'LIMIT_FILE_SIZE' ? 'File exceeds the maximum allowed size' : err.message;
+    logger.warn({ err, path: req.path }, 'Upload rejected by multer');
+    return res.status(400).json({
+      success: false,
+      error: { code, message },
     });
   }
 

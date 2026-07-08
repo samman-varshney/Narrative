@@ -37,6 +37,12 @@ enum BlogVisibility {
   MEMBERS_ONLY
 }
 
+enum MediaResourceType {
+  IMAGE
+  VIDEO // reserved — not built yet
+  DOCUMENT // reserved — not built yet
+}
+
 model User {
   id           String  @id @default(cuid())
   email        String  @unique
@@ -44,7 +50,7 @@ model User {
   name         String
   username     String  @unique
   bio          String? @db.Text
-  avatar       String?
+  avatar       String? // denormalized secureUrl of the current avatar (kept for convenience)
   role         Role    @default(USER)
 
   status     UserStatus @default(ACTIVE)
@@ -71,9 +77,45 @@ model User {
   notifications Notification[]
   sessions      Session[]
   skills        UserSkill[]
+  media         Media[]       @relation("MediaUploader")
+
+  // Current avatar as a proper reference to its Media record (source of truth).
+  avatarMediaId String? @unique
+  avatarMedia   Media?  @relation("UserAvatar", fields: [avatarMediaId], references: [id], onDelete: SetNull)
 
   @@index([username])
   @@index([name])
+}
+
+model Media {
+  id               String            @id @default(cuid())
+  publicId         String            @unique // cloudinary public_id OR local filename
+  url              String
+  secureUrl        String
+  originalFilename String
+  mimeType         String // derived from sharp inspection, NOT the client-provided value
+  extension        String
+  fileSize         Int
+  width            Int?
+  height           Int?
+  resourceType     MediaResourceType @default(IMAGE)
+  provider         String // 'local' | 'cloudinary'
+  checksum         String? // sha256 hex of the stored bytes
+  metadata         Json? // { context, format, altText, ... }
+
+  uploadedById String
+  uploadedBy   User   @relation("MediaUploader", fields: [uploadedById], references: [id], onDelete: Cascade)
+
+  // Back-relation for the user whose current avatar this media is (if any).
+  avatarOf User? @relation("UserAvatar")
+
+  deletedAt DateTime? // soft delete
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([uploadedById])
+  @@index([deletedAt])
+  @@index([resourceType])
 }
 
 model UserProfile {

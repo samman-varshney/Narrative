@@ -10,7 +10,7 @@ const fileFilter = (req: any, file: Express.Multer.File, cb: multer.FileFilterCa
   if (file.mimetype.startsWith('image/')) {
     cb(null, true);
   } else {
-    cb(new AppError('Not an image! Please upload only images.', 400));
+    cb(new AppError('Not an image! Please upload only images.', 400, 'UNSUPPORTED_MEDIA_TYPE'));
   }
 };
 

@@ -13,4 +13,12 @@ export const EVENTS = {
   USER_AVATAR_UPDATED: 'USER_AVATAR_UPDATED',
   USER_SETTINGS_UPDATED: 'USER_SETTINGS_UPDATED',
   USER_DELETED: 'USER_DELETED',
+
+  // Media — payloads:
+  //  MEDIA_UPLOADED { mediaId, userId, secureUrl }
+  //  MEDIA_REPLACED { mediaId, userId, secureUrl, oldPublicId }
+  //  MEDIA_DELETED  { mediaId, userId }
+  MEDIA_UPLOADED: 'MEDIA_UPLOADED',
+  MEDIA_REPLACED: 'MEDIA_REPLACED',
+  MEDIA_DELETED: 'MEDIA_DELETED',
 };
