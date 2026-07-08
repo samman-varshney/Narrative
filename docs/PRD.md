@@ -1,4 +1,4 @@
-# Blogzilla V1 - Product Requirements Document (PRD)
+# Narrative - Product Requirements Document (PRD)
 
 ## 1. Functional Requirements
 
