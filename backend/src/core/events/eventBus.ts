@@ -21,4 +21,10 @@ export const EVENTS = {
   MEDIA_UPLOADED: 'MEDIA_UPLOADED',
   MEDIA_REPLACED: 'MEDIA_REPLACED',
   MEDIA_DELETED: 'MEDIA_DELETED',
+
+  // Follow — payloads:
+  //  USER_FOLLOWED   { followerId, followingId }
+  //  USER_UNFOLLOWED { followerId, followingId }
+  USER_FOLLOWED: 'USER_FOLLOWED',
+  USER_UNFOLLOWED: 'USER_UNFOLLOWED',
 };

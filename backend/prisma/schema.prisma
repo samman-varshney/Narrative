@@ -307,8 +307,10 @@ model Follow {
   createdAt DateTime @default(now())
 
   @@unique([followerId, followingId]) // Prevent duplicate follows
-  @@index([followerId])
-  @@index([followingId])
+  // Composite indexes optimize cursor pagination ordered by createdAt AND cover
+  // the single-column filters used by count queries (leftmost-prefix rule).
+  @@index([followingId, createdAt]) // followers list + follower count
+  @@index([followerId, createdAt]) // following list + following count
 }
 
 model Notification {

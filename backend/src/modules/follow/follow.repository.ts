@@ -1,0 +1,166 @@
+import { Prisma } from '@prisma/client';
+import { prisma } from '../../core/database/prisma';
+import type { CursorPagination } from '../../core/utils/pagination';
+
+/**
+ * Public, non-sensitive user fields surfaced in follower/following lists.
+ * Kept here (the only place that reads User rows for this module) so the shape
+ * stays consistent between the two list queries.
+ */
+export const followUserSelect = {
+  id: true,
+  username: true,
+  name: true,
+  avatar: true,
+  bio: true,
+  isVerified: true,
+} satisfies Prisma.UserSelect;
+
+/** A Follow row joined with the counterpart user (follower or following). */
+export type FollowWithFollower = Prisma.FollowGetPayload<{
+  include: { follower: { select: typeof followUserSelect } };
+}>;
+export type FollowWithFollowing = Prisma.FollowGetPayload<{
+  include: { following: { select: typeof followUserSelect } };
+}>;
+
+export class FollowRepository {
+  /**
+   * Idempotent follow. Attempts to create the edge and swallows the unique-
+   * constraint violation (P2002) that occurs when the relationship already
+   * exists, so a repeat follow is a no-op. Returns whether a new row was created
+   * so the service knows whether to emit USER_FOLLOWED.
+   */
+  async follow(
+    followerId: string,
+    followingId: string
+  ): Promise<{ created: boolean }> {
+    try {
+      await prisma.follow.create({ data: { followerId, followingId } });
+      return { created: true };
+    } catch (err) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        return { created: false };
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Idempotent unfollow. `deleteMany` returns a count instead of throwing when
+   * the edge is absent, so unfollowing a non-followed user is a no-op. Returns
+   * how many rows were removed (0 or 1).
+   */
+  async unfollow(
+    followerId: string,
+    followingId: string
+  ): Promise<{ count: number }> {
+    const result = await prisma.follow.deleteMany({
+      where: { followerId, followingId },
+    });
+    return { count: result.count };
+  }
+
+  /** Whether `followerId` currently follows `followingId`. */
+  async exists(followerId: string, followingId: string): Promise<boolean> {
+    const row = await prisma.follow.findUnique({
+      where: { followerId_followingId: { followerId, followingId } },
+      select: { id: true },
+    });
+    return row !== null;
+  }
+
+  /**
+   * Followers of `userId` (rows where they are the `following` side), newest
+   * first, with cursor pagination. Fetches `limit + 1` to detect a next page.
+   */
+  async getFollowers(
+    userId: string,
+    { cursor, limit }: CursorPagination
+  ): Promise<FollowWithFollower[]> {
+    return prisma.follow.findMany({
+      where: { followingId: userId },
+      include: { follower: { select: followUserSelect } },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: limit + 1,
+      ...(cursor && { cursor: { id: cursor }, skip: 1 }),
+    });
+  }
+
+  /**
+   * Users that `userId` follows (rows where they are the `follower` side),
+   * newest first, with cursor pagination.
+   */
+  async getFollowing(
+    userId: string,
+    { cursor, limit }: CursorPagination
+  ): Promise<FollowWithFollowing[]> {
+    return prisma.follow.findMany({
+      where: { followerId: userId },
+      include: { following: { select: followUserSelect } },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: limit + 1,
+      ...(cursor && { cursor: { id: cursor }, skip: 1 }),
+    });
+  }
+
+  /** Number of followers of `userId`. Index-only via (followingId, createdAt). */
+  async countFollowers(userId: string): Promise<number> {
+    return prisma.follow.count({ where: { followingId: userId } });
+  }
+
+  /** Number of users `userId` follows. Index-only via (followerId, createdAt). */
+  async countFollowing(userId: string): Promise<number> {
+    return prisma.follow.count({ where: { followerId: userId } });
+  }
+
+  /**
+   * Of `targetUserIds`, which does `viewerId` already follow? Single batched
+   * query used to annotate list items with `isFollowedByViewer` (avoids N+1).
+   * Returns the followed subset as a Set for O(1) lookups.
+   */
+  async getFollowedSubset(
+    viewerId: string,
+    targetUserIds: string[]
+  ): Promise<Set<string>> {
+    if (targetUserIds.length === 0) return new Set();
+    const rows = await prisma.follow.findMany({
+      where: { followerId: viewerId, followingId: { in: targetUserIds } },
+      select: { followingId: true },
+    });
+    return new Set(rows.map((r) => r.followingId));
+  }
+
+  /**
+   * Future-ready: users who follow BOTH `userIdA` and `userIdB` (their mutual
+   * followers). Not yet exposed via a route — kept here so the mutual-follow
+   * feature can be wired up without touching the data layer.
+   */
+  async getMutualFollowers(
+    userIdA: string,
+    userIdB: string,
+    { cursor, limit }: CursorPagination
+  ): Promise<FollowWithFollower[]> {
+    const bFollowerIds = (
+      await prisma.follow.findMany({
+        where: { followingId: userIdB },
+        select: { followerId: true },
+      })
+    ).map((r) => r.followerId);
+
+    if (bFollowerIds.length === 0) return [];
+
+    return prisma.follow.findMany({
+      where: { followingId: userIdA, followerId: { in: bFollowerIds } },
+      include: { follower: { select: followUserSelect } },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: limit + 1,
+      ...(cursor && { cursor: { id: cursor }, skip: 1 }),
+    });
+  }
+}
+
+export const followRepository = new FollowRepository();

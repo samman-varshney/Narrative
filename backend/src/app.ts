@@ -10,6 +10,7 @@ import { globalErrorHandler } from './core/middlewares/errorHandler';
 import { logger } from './core/utils/logger';
 import { authRoutes } from './modules/auth/auth.routes';
 import { userRoutes } from './modules/user/user.routes';
+import { followRoutes } from './modules/follow/follow.routes';
 import { mediaRoutes } from './modules/media/media.routes';
 
 const app: Application = express();
@@ -44,6 +45,11 @@ app.get('/health', (req: Request, res: Response) => {
 
 // Register Module Routes
 app.use('/api/v1/auth', authRoutes);
+// followRoutes shares the /users mount and MUST be registered before userRoutes:
+// its 2-segment paths (/:userId/followers, etc.) are matched here first, while
+// userRoutes' single-segment/`/me` routes fall through. This ordering lets the
+// public follower/following lists work without userRoutes' requireAuth gating them.
+app.use('/api/v1/users', followRoutes);
 app.use('/api/v1/users', userRoutes);
 app.use('/api/v1/media', mediaRoutes);
 
