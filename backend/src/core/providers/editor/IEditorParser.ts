@@ -3,6 +3,12 @@ export interface EditorMetadata {
   charCount: number;
   readingTimeMinutes: number;
   plainText: string;
+  /** Number of heading nodes (`type: 'heading'`). */
+  headingCount: number;
+  /** Number of image nodes (`type: 'image'`). */
+  imageCount: number;
+  /** Number of code-block nodes (`type: 'codeBlock'`). */
+  codeBlockCount: number;
 }
 
 export interface IEditorParser {

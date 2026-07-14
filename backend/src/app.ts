@@ -12,6 +12,7 @@ import { authRoutes } from './modules/auth/auth.routes';
 import { userRoutes } from './modules/user/user.routes';
 import { followRoutes } from './modules/follow/follow.routes';
 import { mediaRoutes } from './modules/media/media.routes';
+import { blogRoutes } from './modules/blog/blog.routes';
 
 const app: Application = express();
 
@@ -52,6 +53,7 @@ app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/users', followRoutes);
 app.use('/api/v1/users', userRoutes);
 app.use('/api/v1/media', mediaRoutes);
+app.use('/api/v1/blogs', blogRoutes);
 
 // Global Error Handler
 app.use(globalErrorHandler);

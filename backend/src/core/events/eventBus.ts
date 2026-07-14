@@ -27,4 +27,22 @@ export const EVENTS = {
   //  USER_UNFOLLOWED { followerId, followingId }
   USER_FOLLOWED: 'USER_FOLLOWED',
   USER_UNFOLLOWED: 'USER_UNFOLLOWED',
+
+  // Blog — payloads:
+  //  BLOG_CREATED       { blogId, authorId, slug }
+  //  BLOG_UPDATED       { blogId, authorId }
+  //  BLOG_PUBLISHED     { blogId, authorId, slug, publishedAt }
+  //  BLOG_UNPUBLISHED   { blogId, authorId }
+  //  BLOG_ARCHIVED      { blogId, authorId }
+  //  BLOG_RESTORED      { blogId, authorId, status }
+  //  BLOG_DELETED       { blogId, authorId }
+  //  BLOG_COVER_UPDATED { blogId, authorId, coverImage }
+  BLOG_CREATED: 'BLOG_CREATED',
+  BLOG_UPDATED: 'BLOG_UPDATED',
+  BLOG_PUBLISHED: 'BLOG_PUBLISHED',
+  BLOG_UNPUBLISHED: 'BLOG_UNPUBLISHED',
+  BLOG_ARCHIVED: 'BLOG_ARCHIVED',
+  BLOG_RESTORED: 'BLOG_RESTORED',
+  BLOG_DELETED: 'BLOG_DELETED',
+  BLOG_COVER_UPDATED: 'BLOG_COVER_UPDATED',
 };
