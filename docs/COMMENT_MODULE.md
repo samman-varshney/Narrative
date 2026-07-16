@@ -148,18 +148,21 @@ sequenceDiagram
 ```
 
 ### Sequence — soft delete (tombstone)
-
 ```mermaid
 sequenceDiagram
-  participant C as Client
-  participant Svc as CommentService
-  participant Repo as CommentRepository
-  C->>Svc: DELETE /comments/:id
-  Svc->>Repo: findById(id); assertOwnership(author or ADMIN)
-  Svc->>Repo: softDelete(id)  (sets deletedAt)
-  Svc->>Svc: toCommentDTO -> content = "This comment has been deleted."
-  Note over Svc: children keep rendering under the tombstone
-  Svc-->>C: 200 { comment(isDeleted:true) }
+    participant C as Client
+    participant Svc as CommentService
+    participant Repo as CommentRepository
+
+    C->>Svc: DELETE /comments/:id
+    Svc->>Repo: Find comment by ID
+    Repo-->>Svc: Comment
+    Svc->>Svc: Check ownership or ADMIN role
+    Svc->>Repo: Soft delete comment
+    Note over Repo: deletedAt is updated
+    Svc->>Svc: Map to DTO with tombstone content
+    Note over Svc: Replies continue to render
+    Svc-->>C: 200 OK
 ```
 
 ---
