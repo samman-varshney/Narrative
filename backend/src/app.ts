@@ -13,6 +13,7 @@ import { userRoutes } from './modules/user/user.routes';
 import { followRoutes } from './modules/follow/follow.routes';
 import { mediaRoutes } from './modules/media/media.routes';
 import { blogRoutes } from './modules/blog/blog.routes';
+import { blogCommentRoutes, commentRoutes } from './modules/comment/comment.routes';
 
 const app: Application = express();
 
@@ -54,6 +55,11 @@ app.use('/api/v1/users', followRoutes);
 app.use('/api/v1/users', userRoutes);
 app.use('/api/v1/media', mediaRoutes);
 app.use('/api/v1/blogs', blogRoutes);
+// Blog-scoped comment routes share the /blogs mount; their 2-segment paths
+// (/:blogId/comments) don't collide with the blog `/:slug` route, but mounting
+// after blogRoutes keeps intent clear.
+app.use('/api/v1/blogs', blogCommentRoutes);
+app.use('/api/v1/comments', commentRoutes);
 
 // Global Error Handler
 app.use(globalErrorHandler);

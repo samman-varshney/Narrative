@@ -293,12 +293,27 @@ model Comment {
   parent   Comment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
   replies  Comment[] @relation("CommentReplies")
 
+  // Threading: depth drives the max-nesting cap; path is the materialized ancestor
+  // chain "<rootId>/<childId>/<selfId>" — a structural cycle guard and a future
+  // O(1) subtree fetch (WHERE path startsWith <rootPath>).
+  depth Int    @default(0)
+  path  String @default("")
+
+  // Editing (future-ready for full edit history)
+  isEdited Boolean   @default(false)
+  editedAt DateTime?
+
+  // Lifecycle / moderation — tombstones stay in the tree so children remain visible.
+  deletedAt DateTime? // author/admin soft delete
+  isHidden  Boolean   @default(false) // admin moderation hide
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@index([blogId])
+  @@index([blogId, parentId, createdAt]) // top-level page (parentId IS NULL) + stable ordering
+  @@index([parentId, createdAt]) // direct-children page / BFS descendant load
   @@index([authorId])
-  @@index([parentId])
+  @@index([blogId, deletedAt]) // per-blog comment counts
 }
 
 model Like {

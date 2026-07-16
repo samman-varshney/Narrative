@@ -1,0 +1,447 @@
+import { commentRepository, CommentRow } from './comment.repository';
+import { blogRepository } from '../blog/blog.repository';
+import {
+  CreateCommentInput,
+  ReplyCommentInput,
+  UpdateCommentInput,
+  CommentListQuery,
+  RepliesQuery,
+  MAX_COMMENT_DEPTH,
+  MAX_COMMENT_LENGTH,
+  MIN_COMMENT_LENGTH,
+} from './comment.validator';
+import { AppError } from '../../core/exceptions/AppError';
+import { eventBus, EVENTS } from '../../core/events/eventBus';
+import { buildCursorPage } from '../../core/utils/pagination';
+import { sanitizePlainText } from '../../core/utils/sanitizeText';
+
+/** Public author fields embedded in a comment (mirrors `blogAuthorSelect`). */
+export interface CommentAuthorDTO {
+  id: string;
+  username: string;
+  name: string;
+  avatar: string | null;
+  bio: string | null;
+  isVerified: boolean;
+}
+
+/**
+ * A comment as returned to clients. `content` is replaced with a tombstone
+ * string when the comment is deleted or hidden (children still render).
+ * `replies` is present only in tree/detail responses; `replyCount` is the
+ * number of direct children.
+ */
+export interface CommentDTO {
+  id: string;
+  content: string;
+  blogId: string;
+  authorId: string;
+  parentId: string | null;
+  depth: number;
+  author: CommentAuthorDTO;
+  isEdited: boolean;
+  editedAt: Date | null;
+  isDeleted: boolean;
+  isHidden: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+  replyCount: number;
+  replies?: CommentDTO[];
+}
+
+/** A cursor page of comments. */
+export interface CommentListResult {
+  items: CommentDTO[];
+  nextCursor: string | null;
+  hasNextPage: boolean;
+  totalCount: number;
+}
+
+const DELETED_PLACEHOLDER = 'This comment has been deleted.';
+const HIDDEN_PLACEHOLDER = 'This comment has been hidden by a moderator.';
+
+/**
+ * Maps a comment row to its DTO, applying tombstone content for deleted/hidden
+ * comments. Pure (module-level) so the tree builder and tests can use it
+ * directly. `replies`, when provided, is attached and drives `replyCount`.
+ */
+export function toCommentDTO(
+  row: CommentRow,
+  replies?: CommentDTO[],
+  replyCount?: number
+): CommentDTO {
+  const isDeleted = row.deletedAt !== null;
+  const content = isDeleted
+    ? DELETED_PLACEHOLDER
+    : row.isHidden
+      ? HIDDEN_PLACEHOLDER
+      : row.content;
+
+  return {
+    id: row.id,
+    content,
+    blogId: row.blogId,
+    authorId: row.authorId,
+    parentId: row.parentId,
+    depth: row.depth,
+    author: row.author,
+    isEdited: row.isEdited,
+    editedAt: row.editedAt,
+    isDeleted,
+    isHidden: row.isHidden,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    replyCount: replyCount ?? replies?.length ?? 0,
+    ...(replies !== undefined && { replies }),
+  };
+}
+
+/**
+ * Assembles a nested comment forest from a flat set of rows. `rootIds` names the
+ * roots (top-level page ids, or a single id for a detail view); every other row
+ * is attached to its parent by `parentId`. Ordering follows the row order
+ * (repositories return oldest-first). Pure + O(n) — unit-testable in isolation.
+ */
+export function buildCommentTree(rows: CommentRow[], rootIds: string[]): CommentDTO[] {
+  const byParent = new Map<string, CommentRow[]>();
+  const byId = new Map<string, CommentRow>();
+  for (const row of rows) {
+    byId.set(row.id, row);
+    if (row.parentId) {
+      const siblings = byParent.get(row.parentId);
+      if (siblings) siblings.push(row);
+      else byParent.set(row.parentId, [row]);
+    }
+  }
+
+  const build = (row: CommentRow): CommentDTO => {
+    const children = byParent.get(row.id) ?? [];
+    const replies = children.map(build);
+    return toCommentDTO(row, replies, children.length);
+  };
+
+  return rootIds
+    .map((id) => byId.get(id))
+    .filter((row): row is CommentRow => row !== undefined)
+    .map(build);
+}
+
+export class CommentService {
+  // ---- Create / reply ----
+
+  /**
+   * Creates a comment on a blog. When `input.parentId` is set the create is a
+   * reply (identical to `reply(...)`). The author is always the authenticated
+   * caller.
+   */
+  async createComment(
+    authorId: string,
+    blogId: string,
+    input: CreateCommentInput
+  ): Promise<CommentDTO> {
+    const content = this.sanitize(input.content);
+    await this.assertCommentableBlog(blogId);
+
+    const parent = input.parentId
+      ? await this.loadParentInBlog(input.parentId, blogId)
+      : null;
+
+    return this.persist(authorId, blogId, parent, content);
+  }
+
+  /** Replies to a comment; the blog is inferred from the parent. */
+  async reply(
+    authorId: string,
+    parentId: string,
+    input: ReplyCommentInput
+  ): Promise<CommentDTO> {
+    const content = this.sanitize(input.content);
+    const parent = await this.load(parentId);
+    await this.assertCommentableBlog(parent.blogId);
+    return this.persist(authorId, parent.blogId, parent, content);
+  }
+
+  /**
+   * Persists a new comment, computing depth + materialized path from the parent
+   * and enforcing the max-depth cap. When the parent is already at the deepest
+   * allowed level, the new comment attaches to the parent's parent (the deepest
+   * allowed parent) instead of nesting further. Cycles are impossible: a new
+   * node can never be an ancestor of an existing one, and `parentId` is never
+   * mutated afterward.
+   */
+  private async persist(
+    authorId: string,
+    blogId: string,
+    parent: CommentRow | null,
+    content: string
+  ): Promise<CommentDTO> {
+    let parentId: string | null = null;
+    let depth = 0;
+    let parentPath = '';
+
+    if (parent) {
+      if (parent.depth >= MAX_COMMENT_DEPTH) {
+        // Clamp: re-parent to the parent's parent (guaranteed to exist because
+        // depth >= MAX_COMMENT_DEPTH >= 1), keeping the new comment at the cap.
+        parentId = parent.parentId;
+        depth = parent.depth;
+        parentPath = stripLastSegment(parent.path);
+      } else {
+        parentId = parent.id;
+        depth = parent.depth + 1;
+        parentPath = parent.path;
+      }
+    }
+
+    const created = await commentRepository.create({
+      blogId,
+      authorId,
+      content,
+      parentId,
+      depth,
+      parentPath,
+    });
+
+    eventBus.emit(EVENTS.COMMENT_CREATED, {
+      commentId: created.id,
+      blogId,
+      authorId,
+      parentId: created.parentId,
+    });
+    if (parent) {
+      // `parentId`/`parentAuthorId` reference the comment actually replied-to
+      // (the notification target), even when structurally clamped to an ancestor.
+      eventBus.emit(EVENTS.COMMENT_REPLIED, {
+        commentId: created.id,
+        blogId,
+        authorId,
+        parentId: parent.id,
+        parentAuthorId: parent.authorId,
+      });
+    }
+
+    return toCommentDTO(created, undefined, 0);
+  }
+
+  // ---- Edit / lifecycle / moderation ----
+
+  /** Edits a comment's content. Author or ADMIN only; deleted comments can't be edited. */
+  async edit(
+    id: string,
+    userId: string,
+    role: string,
+    input: UpdateCommentInput
+  ): Promise<CommentDTO> {
+    const comment = await this.load(id);
+    this.assertOwnership(comment.authorId, userId, role);
+    if (comment.deletedAt) {
+      throw new AppError('Cannot edit a deleted comment', 409, 'COMMENT_DELETED');
+    }
+
+    const content = this.sanitize(input.content);
+    const updated = await commentRepository.update(id, content);
+
+    eventBus.emit(EVENTS.COMMENT_UPDATED, {
+      commentId: id,
+      blogId: comment.blogId,
+      authorId: comment.authorId,
+    });
+    return toCommentDTO(updated, undefined, await commentRepository.countReplies(id));
+  }
+
+  /** Soft-deletes a comment (tombstone kept in tree). Author or ADMIN. Idempotent. */
+  async softDelete(id: string, userId: string, role: string): Promise<CommentDTO> {
+    const comment = await this.load(id);
+    this.assertOwnership(comment.authorId, userId, role);
+    if (comment.deletedAt) {
+      return toCommentDTO(comment, undefined, await commentRepository.countReplies(id));
+    }
+
+    const updated = await commentRepository.softDelete(id);
+    eventBus.emit(EVENTS.COMMENT_DELETED, {
+      commentId: id,
+      blogId: comment.blogId,
+      authorId: comment.authorId,
+    });
+    return toCommentDTO(updated, undefined, await commentRepository.countReplies(id));
+  }
+
+  /** Restores a soft-deleted comment. ADMIN only. */
+  async restore(id: string, role: string): Promise<CommentDTO> {
+    this.assertAdmin(role);
+    const comment = await this.load(id);
+    const updated = await commentRepository.restore(id);
+
+    eventBus.emit(EVENTS.COMMENT_RESTORED, {
+      commentId: id,
+      blogId: comment.blogId,
+      authorId: comment.authorId,
+    });
+    return toCommentDTO(updated, undefined, await commentRepository.countReplies(id));
+  }
+
+  /** Hides a comment from public view (moderation). ADMIN only. */
+  async hide(id: string, role: string): Promise<CommentDTO> {
+    this.assertAdmin(role);
+    const comment = await this.load(id);
+    const updated = await commentRepository.setHidden(id, true);
+
+    eventBus.emit(EVENTS.COMMENT_HIDDEN, {
+      commentId: id,
+      blogId: comment.blogId,
+      authorId: comment.authorId,
+    });
+    return toCommentDTO(updated, undefined, await commentRepository.countReplies(id));
+  }
+
+  // ---- Retrieval ----
+
+  /**
+   * Cursor page of a blog's top-level comments. In tree mode (default) each root
+   * is returned with its full reply subtree, loaded with a bounded breadth-first
+   * sweep (at most `MAX_COMMENT_DEPTH` queries regardless of comment count). In
+   * lazy mode (`tree: false`) roots carry only a `replyCount`.
+   */
+  async getBlogComments(
+    blogId: string,
+    query: CommentListQuery
+  ): Promise<CommentListResult> {
+    await this.assertCommentableBlog(blogId);
+
+    const [rows, totalCount] = await Promise.all([
+      commentRepository.findTopLevel(blogId, query),
+      commentRepository.countBlogComments(blogId),
+    ]);
+
+    const page = buildCursorPage(rows, query.limit, (r) => r.id);
+    const rootIds = page.items.map((r) => r.id);
+
+    let items: CommentDTO[];
+    if (query.tree) {
+      const descendants = await this.loadDescendants(rootIds);
+      items = buildCommentTree([...page.items, ...descendants], rootIds);
+    } else {
+      const counts = await commentRepository.countRepliesFor(rootIds);
+      items = page.items.map((r) => toCommentDTO(r, undefined, counts.get(r.id) ?? 0));
+    }
+
+    return {
+      items,
+      nextCursor: page.nextCursor,
+      hasNextPage: page.hasNextPage,
+      totalCount,
+    };
+  }
+
+  /** A single comment with its full reply subtree. */
+  async getById(id: string): Promise<CommentDTO> {
+    const comment = await this.load(id);
+    const descendants = await this.loadDescendants([id]);
+    const [tree] = buildCommentTree([comment, ...descendants], [id]);
+    return tree!;
+  }
+
+  /** Cursor page of one comment's direct replies (lazy expansion). */
+  async getReplies(parentId: string, query: RepliesQuery): Promise<CommentListResult> {
+    await this.load(parentId); // 404 if the parent doesn't exist
+
+    const [rows, totalCount] = await Promise.all([
+      commentRepository.findReplies(parentId, query),
+      commentRepository.countReplies(parentId),
+    ]);
+
+    const page = buildCursorPage(rows, query.limit, (r) => r.id);
+    const counts = await commentRepository.countRepliesFor(page.items.map((r) => r.id));
+    const items = page.items.map((r) => toCommentDTO(r, undefined, counts.get(r.id) ?? 0));
+
+    return {
+      items,
+      nextCursor: page.nextCursor,
+      hasNextPage: page.hasNextPage,
+      totalCount,
+    };
+  }
+
+  /**
+   * Loads every descendant of `rootIds` breadth-first, one query per depth level
+   * (bounded by `MAX_COMMENT_DEPTH`). Because depth is capped on write, this
+   * captures the entire subtree — no N+1, no unbounded recursion.
+   */
+  private async loadDescendants(rootIds: string[]): Promise<CommentRow[]> {
+    const all: CommentRow[] = [];
+    let frontier = rootIds;
+    for (let level = 0; level < MAX_COMMENT_DEPTH && frontier.length > 0; level++) {
+      const children = await commentRepository.findChildrenByParentIds(frontier);
+      if (children.length === 0) break;
+      all.push(...children);
+      frontier = children.map((c) => c.id);
+    }
+    return all;
+  }
+
+  // ---- Helpers ----
+
+  private sanitize(raw: string): string {
+    const content = sanitizePlainText(raw);
+    if (content.length < MIN_COMMENT_LENGTH) {
+      throw new AppError('Comment cannot be empty', 400, 'INVALID_COMMENT');
+    }
+    if (content.length > MAX_COMMENT_LENGTH) {
+      throw new AppError('Comment is too long', 400, 'INVALID_COMMENT');
+    }
+    return content;
+  }
+
+  private async load(id: string): Promise<CommentRow> {
+    const comment = await commentRepository.findById(id);
+    if (!comment) {
+      throw new AppError('Comment not found', 404, 'COMMENT_NOT_FOUND');
+    }
+    return comment;
+  }
+
+  /** Loads a parent comment and ensures it belongs to the target blog. */
+  private async loadParentInBlog(parentId: string, blogId: string): Promise<CommentRow> {
+    const parent = await this.load(parentId);
+    if (parent.blogId !== blogId) {
+      throw new AppError(
+        'Parent comment does not belong to this blog',
+        400,
+        'PARENT_BLOG_MISMATCH'
+      );
+    }
+    return parent;
+  }
+
+  /** Verifies the blog exists and is not deleted. */
+  private async assertCommentableBlog(blogId: string): Promise<void> {
+    const blog = await blogRepository.findById(blogId);
+    if (!blog || blog.status === 'DELETED') {
+      throw new AppError('Blog not found', 404, 'BLOG_NOT_FOUND');
+    }
+  }
+
+  private assertOwnership(authorId: string, userId: string, role: string): void {
+    if (authorId !== userId && role !== 'ADMIN') {
+      throw new AppError(
+        'You do not have permission to modify this comment',
+        403,
+        'FORBIDDEN'
+      );
+    }
+  }
+
+  private assertAdmin(role: string): void {
+    if (role !== 'ADMIN') {
+      throw new AppError('Admin privileges required', 403, 'FORBIDDEN');
+    }
+  }
+}
+
+/** Removes the last `/segment` from a materialized path (`"a/b/c"` -> `"a/b"`). */
+function stripLastSegment(path: string): string {
+  const idx = path.lastIndexOf('/');
+  return idx === -1 ? '' : path.slice(0, idx);
+}
+
+export const commentService = new CommentService();

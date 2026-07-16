@@ -45,4 +45,18 @@ export const EVENTS = {
   BLOG_RESTORED: 'BLOG_RESTORED',
   BLOG_DELETED: 'BLOG_DELETED',
   BLOG_COVER_UPDATED: 'BLOG_COVER_UPDATED',
+
+  // Comment — payloads:
+  //  COMMENT_CREATED  { commentId, blogId, authorId, parentId }
+  //  COMMENT_REPLIED  { commentId, blogId, authorId, parentId, parentAuthorId }
+  //  COMMENT_UPDATED  { commentId, blogId, authorId }
+  //  COMMENT_DELETED  { commentId, blogId, authorId }
+  //  COMMENT_RESTORED { commentId, blogId, authorId }
+  //  COMMENT_HIDDEN   { commentId, blogId, authorId }
+  COMMENT_CREATED: 'COMMENT_CREATED',
+  COMMENT_REPLIED: 'COMMENT_REPLIED',
+  COMMENT_UPDATED: 'COMMENT_UPDATED',
+  COMMENT_DELETED: 'COMMENT_DELETED',
+  COMMENT_RESTORED: 'COMMENT_RESTORED',
+  COMMENT_HIDDEN: 'COMMENT_HIDDEN',
 };
