@@ -239,7 +239,7 @@ sequenceDiagram
         S->>E: emit BLOG_BOOKMARKED
     end
     S->>Repo: countBookmarks + countBlogBookmarks (parallel)
-    Note over S: isBookmarked comes from the write's outcome,<br/>not a re-read — no round trip, no disagreement.
+    Note over S: isBookmarked comes from the write's outcome,not a re-read — no round trip, no disagreement.
     Repo-->>S: counts
     S-->>Ctl: BookmarkStatusDTO
     Ctl-->>C: 200 { success, data: status }
@@ -257,7 +257,7 @@ sequenceDiagram
     C->>S: POST /blogs/:blogId/bookmark/toggle
     S->>S: assertBookmarkableBlog (existence + canView)
     S->>Repo: toggleBookmark(userId, blogId)
-    Note over Repo: create-first; on P2002 → deleteMany.<br/>The unique index arbitrates concurrent toggles.
+    Note over Repo: create-first on P2002 → deleteMany.The unique index arbitrates concurrent toggles.
     Repo-->>S: { bookmarked, changed }
     alt changed
         S->>E: emit BLOG_BOOKMARKED or BLOG_UNBOOKMARKED
