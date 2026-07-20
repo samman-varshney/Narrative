@@ -7,6 +7,7 @@ import RedisStore from 'rate-limit-redis';
 import cookieParser from 'cookie-parser';
 import { redis } from './core/providers/redis';
 import { globalErrorHandler } from './core/middlewares/errorHandler';
+import { skipInTests } from './core/middlewares/rateLimiter';
 import { logger } from './core/utils/logger';
 import { authRoutes } from './modules/auth/auth.routes';
 import { userRoutes } from './modules/user/user.routes';
@@ -14,6 +15,10 @@ import { followRoutes } from './modules/follow/follow.routes';
 import { mediaRoutes } from './modules/media/media.routes';
 import { blogRoutes } from './modules/blog/blog.routes';
 import { blogCommentRoutes, commentRoutes } from './modules/comment/comment.routes';
+import {
+  blogBookmarkRoutes,
+  userBookmarkRoutes,
+} from './modules/bookmark/bookmark.routes';
 
 const app: Application = express();
 
@@ -33,6 +38,7 @@ const limiter = rateLimit({
   max: 100, // Limit each IP to 100 requests per `window`
   standardHeaders: true,
   legacyHeaders: false,
+  skip: skipInTests,
   store: new RedisStore({
     sendCommand: redis.call.bind(redis) as any,
     prefix: 'rl:global:', // Distinct namespace so it doesn't share counters with authLimiter
@@ -52,8 +58,15 @@ app.use('/api/v1/auth', authRoutes);
 // userRoutes' single-segment/`/me` routes fall through. This ordering lets the
 // public follower/following lists work without userRoutes' requireAuth gating them.
 app.use('/api/v1/users', followRoutes);
+// Same reasoning for the bookmark library: /me/bookmarks is registered before
+// userRoutes so it is matched ahead of that router's `/:username` route.
+app.use('/api/v1/users', userBookmarkRoutes);
 app.use('/api/v1/users', userRoutes);
 app.use('/api/v1/media', mediaRoutes);
+// Blog-scoped bookmark routes share the /blogs mount. Their 2-segment paths
+// (/:blogId/bookmark) don't collide with the blog `/:slug` route; mounting
+// before blogRoutes keeps the ordering guarantee explicit.
+app.use('/api/v1/blogs', blogBookmarkRoutes);
 app.use('/api/v1/blogs', blogRoutes);
 // Blog-scoped comment routes share the /blogs mount; their 2-segment paths
 // (/:blogId/comments) don't collide with the blog `/:slug` route, but mounting

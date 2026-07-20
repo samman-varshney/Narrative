@@ -344,8 +344,11 @@ model Bookmark {
   createdAt DateTime @default(now())
 
   @@unique([blogId, userId]) // Prevent duplicate bookmarks
-  @@index([blogId])
-  @@index([userId])
+  // Composite index optimizes the library's cursor pagination ordered by
+  // createdAt AND covers the single-column userId filter used by the count
+  // query (leftmost-prefix rule) — same treatment Follow received.
+  @@index([userId, createdAt]) // "my bookmarks" list + per-user count
+  @@index([blogId]) // per-blog bookmark count + cascade deletes
 }
 
 model Follow {

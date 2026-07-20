@@ -54,8 +54,24 @@ export const blogDetailSelect = {
   seo: true,
 } satisfies Prisma.BlogSelect;
 
+/**
+ * Access-control projection: exactly the fields `blogService.canView` reads.
+ * Sibling modules that only need to gate on visibility use this instead of
+ * `blogDetailSelect`, so an existence check doesn't drag the whole content JSON
+ * (and its SEO/tag joins) across the wire.
+ */
+export const blogVisibilitySelect = {
+  id: true,
+  status: true,
+  visibility: true,
+  authorId: true,
+} satisfies Prisma.BlogSelect;
+
 export type BlogCard = Prisma.BlogGetPayload<{ select: typeof blogCardSelect }>;
 export type BlogDetail = Prisma.BlogGetPayload<{ select: typeof blogDetailSelect }>;
+export type BlogVisibilityRow = Prisma.BlogGetPayload<{
+  select: typeof blogVisibilitySelect;
+}>;
 
 /** Reading metadata written on every content change. */
 export interface ReadingMetadataWrite {
@@ -255,6 +271,15 @@ export class BlogRepository {
 
   findById(id: string): Promise<BlogDetail | null> {
     return prisma.blog.findUnique({ where: { id }, select: blogDetailSelect });
+  }
+
+  /**
+   * Existence + access-control fields only, for sibling modules that just need
+   * to gate on `blogService.canView`. Avoids loading the content JSON on hot
+   * paths that never render the blog.
+   */
+  findVisibilityById(id: string): Promise<BlogVisibilityRow | null> {
+    return prisma.blog.findUnique({ where: { id }, select: blogVisibilitySelect });
   }
 
   /** Cursor page of a single author's blogs, optionally filtered by status/visibility. */

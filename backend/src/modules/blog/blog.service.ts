@@ -28,6 +28,12 @@ export interface Viewer {
   role: string;
 }
 
+/**
+ * The minimal blog shape `canView` inspects. Structural, so both `BlogDetail`
+ * and the lean `blogCardSelect` projection satisfy it.
+ */
+export type ViewableBlog = Pick<BlogDetail, 'status' | 'visibility' | 'authorId'>;
+
 export interface TagDTO {
   id: string;
   name: string;
@@ -428,7 +434,13 @@ export class BlogService {
     return next;
   }
 
-  private canView(blog: BlogDetail, viewer?: Viewer): boolean {
+  /**
+   * Shared visibility guard: may `viewer` see this blog? Public so sibling
+   * modules (Bookmark today) enforce the same status/visibility matrix instead
+   * of duplicating it. Accepts any row carrying the three fields it reads, so
+   * lean `blogCardSelect` projections work as well as full `BlogDetail` ones.
+   */
+  canView(blog: ViewableBlog, viewer?: Viewer): boolean {
     // DELETED blogs are never served on the public slug path — not even to the
     // owner/admin (they use preview-by-id / restore). This stops a stale public
     // URL from resurfacing trashed content.
