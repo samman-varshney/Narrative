@@ -10,6 +10,8 @@ module.exports = {
     '^.+\\.ts$': ['ts-jest', {}],
   },
   setupFiles: ['<rootDir>/jest.setup.js'],
+  // Provisions the local test schema once per run (prisma db push --force-reset).
+  globalSetup: '<rootDir>/jest.globalSetup.js',
   clearMocks: true,
   // The app opens a long-lived Redis (ioredis) connection at import time, which
   // keeps the event loop alive after the suite finishes. Force a clean exit until

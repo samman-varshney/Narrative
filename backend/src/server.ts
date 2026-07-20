@@ -4,8 +4,13 @@ dotenv.config({ quiet: true });
 import app from './app';
 import { logger } from './core/utils/logger';
 import { redis } from './core/providers/redis';
-// Side-effect import: starts background workers (opens Redis connections eagerly).
+import { closeWorkers } from './core/providers/queue';
+import { prisma } from './core/database/prisma';
+// Side-effect imports: start background workers (open Redis connections eagerly).
 import './modules/media/media.worker';
+// Dispatches published domain events to subscribers. Must be imported AFTER
+// subscribers are registered below, or early jobs would find no handlers.
+import './core/events/domainEvents.worker';
 
 const PORT = process.env.PORT || 5000;
 
@@ -20,6 +25,12 @@ const startServer = async () => {
       server.close(async () => {
         logger.info('HTTP server closed.');
         try {
+          // Order matters: drain workers (each holds its own Redis connection and
+          // may have a job in flight) before tearing down the shared connection
+          // and the DB pool they depend on.
+          await closeWorkers();
+          await prisma.$disconnect();
+          logger.info('Database disconnected.');
           await redis.quit();
           logger.info('Redis disconnected.');
           process.exit(0);
