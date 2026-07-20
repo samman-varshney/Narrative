@@ -284,7 +284,7 @@ sequenceDiagram
     S->>S: buildCursorPage → items, nextCursor, hasNextPage
     loop per row
         S->>BS: canView(row.blog, viewer)
-        BS-->>S: boolean → isAvailable; blog nulled when false
+        BS-->>S: boolean → isAvailable, blog nulled when false
     end
     S-->>C: 200 { data: { items }, meta: { nextCursor, hasNextPage, totalCount } }
 ```
