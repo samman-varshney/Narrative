@@ -19,6 +19,8 @@ import { assertPermission } from '../auth/permissions';
 import { eventBus, EVENTS } from '../../core/events/eventBus';
 import { buildCursorPage } from '../../core/utils/pagination';
 import { sanitizePlainText } from '../../core/utils/sanitizeText';
+import { collectPaged } from '../../core/utils/collectPaged';
+import { EXPORT_MAX_ROWS_PER_COLLECTION, EXPORT_PAGE_SIZE } from '../export/export.config';
 
 /** Public author fields embedded in a comment (mirrors `blogAuthorSelect`). */
 export interface CommentAuthorDTO {
@@ -688,6 +690,20 @@ export class CommentService {
     }
   }
 
+
+  /**
+   * Every comment this author wrote, for the data export. See the note on
+   * `blogService.collectForExport` for why this lives in the owning module.
+   */
+  async collectForExport(authorId: string) {
+    type Row = Awaited<ReturnType<typeof commentRepository.findAllByAuthorForExport>>[number];
+    return collectPaged<Row>(
+      (previous) =>
+        commentRepository.findAllByAuthorForExport(authorId, EXPORT_PAGE_SIZE, previous?.id),
+      EXPORT_PAGE_SIZE,
+      EXPORT_MAX_ROWS_PER_COLLECTION
+    );
+  }
 }
 
 /** Removes the last `/segment` from a materialized path (`"a/b/c"` -> `"a/b"`). */

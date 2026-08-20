@@ -143,6 +143,7 @@ model User {
 
   analyticsDaily     UserAnalyticsDaily[]
   blogAnalyticsDaily BlogAnalyticsDaily[] @relation("BlogAnalyticsAuthor")
+  exportRequests     ExportRequest[]
   sessions           Session[]
   skills             UserSkill[]
   media              Media[]              @relation("MediaUploader")
@@ -842,4 +843,73 @@ model ModerationAction {
   @@index([action, createdAt])
   /// One user's full moderation record across all their content.
   @@index([subjectUserId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Data export
+// ---------------------------------------------------------------------------
+// One table, holding both the REQUEST and its ARTIFACT.
+//
+// The artifact is gzipped JSON stored inline in `artifact` (bytea, TOASTed by
+// Postgres) rather than on the storage provider, and that is a privacy decision
+// before it is a storage one. `IStorageProvider` has no private-object or
+// signed-URL concept: every URL it returns is world-readable, and Cloudinary —
+// the production provider — is a media CDN. A complete dump of one person's
+// account does not belong behind a guessable public URL. Held in the row, the
+// bytes inherit the database's access control, and the only way to read them is
+// an authenticated request that proves ownership.
+//
+// The cost is bounded deliberately: `EXPORT_MAX_BYTES` caps a single artifact,
+// and a build that would exceed it FAILS rather than truncating (a silently
+// partial export of your own data is worse than none). Expired artifacts are
+// nulled by the sweep, so the storage is transient rather than accumulating.
+// If exports ever outgrow this, the seam to move is `export.repository` alone.
+
+enum ExportStatus {
+  PENDING
+  PROCESSING
+  READY
+  FAILED
+  /// Terminal, and distinct from a deleted row: the user must be able to see
+  /// that an export they requested existed and has since lapsed, rather than
+  /// finding no trace of it.
+  EXPIRED
+}
+
+model ExportRequest {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  status ExportStatus @default(PENDING)
+
+  /// Gzipped JSON. Null until the build succeeds, and null again once the
+  /// artifact expires or the request fails.
+  ///
+  /// NEVER select this column outside the download path — see the note in
+  /// export.repository.ts. A list query that pulled it would move megabytes to
+  /// render a status badge.
+  artifact Bytes?
+
+  /// Size of the COMPRESSED artifact, retained after `artifact` is nulled so an
+  /// expired request can still say how big it was.
+  sizeBytes Int?
+  /// sha256 of the compressed bytes — lets a client verify a download.
+  checksum  String?
+
+  /// Failure detail, for the user's own eyes. Never a stack trace.
+  error String? @db.Text
+
+  requestedAt DateTime  @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+  /// When the artifact stops being downloadable. Null until READY.
+  expiresAt   DateTime?
+
+  downloadCount Int @default(0)
+
+  /// The cooldown query ("their most recent request") and the history list.
+  @@index([userId, requestedAt])
+  /// The sweep: find READY artifacts past their expiry.
+  @@index([status, expiresAt])
 }

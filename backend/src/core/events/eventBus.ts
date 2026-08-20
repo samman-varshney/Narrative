@@ -203,6 +203,15 @@ export const EVENTS = {
   USER_DEACTIVATED: 'USER_DEACTIVATED',
   USER_REACTIVATED: 'USER_REACTIVATED',
 
+  // Data export — payload:
+  //  DATA_EXPORT_READY { userId, exportId, expiresAt }
+  //
+  // Emitted by the Export module once an artifact is stored, so Notification can
+  // tell the user it is waiting and how long they have. A FACT, not a command:
+  // the build itself is dispatched on the `data_export` queue, because it has
+  // exactly one handler and must never be run twice by two subscribers.
+  DATA_EXPORT_READY: 'DATA_EXPORT_READY',
+
   // Media — payloads:
   //  MEDIA_UPLOADED { mediaId, userId, secureUrl }
   //  MEDIA_REPLACED { mediaId, userId, secureUrl, oldPublicId }

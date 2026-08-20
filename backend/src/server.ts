@@ -17,7 +17,12 @@ import { registerFeedSubscribers } from './modules/feed/subscribers';
 import { registerDashboardSubscribers } from './modules/dashboard/subscribers';
 import { registerModerationSubscribers } from './modules/moderation/subscribers';
 import { registerAuthSubscribers } from './modules/auth/subscribers';
+import { registerRssSubscribers } from './modules/rss/subscribers';
 import { startAnalyticsWorker } from './modules/analytics/analytics.worker';
+import {
+  registerExportSchedules,
+  startExportWorker,
+} from './modules/export/export.worker';
 import { registerAnalyticsSchedules } from './modules/analytics/analytics.scheduler';
 import { startDomainEventsWorker } from './core/events/domainEvents.worker';
 
@@ -30,6 +35,9 @@ registerSearchSubscribers();
 registerAnalyticsSubscribers();
 registerFeedSubscribers();
 registerDashboardSubscribers();
+// RSS invalidation. Registered here for the same reason as every registration
+// above; it consumes Blog, User and moderation facts and emits nothing.
+registerRssSubscribers();
 // Auth's subscriber enforces suspension on already-issued tokens (it revokes
 // sessions and primes the account-status cache); Moderation's evaluates new
 // content and files automated reports. Both are registered here, before the
@@ -44,6 +52,13 @@ startDomainEventsWorker();
 // because it was built through the shared `createWorker` factory.
 startAnalyticsWorker();
 void registerAnalyticsSchedules();
+
+// The export worker builds data-export artifacts on demand and sweeps expired
+// ones hourly. Started here for the same reason as every other worker: creating
+// it opens a Redis connection and begins polling, which must not happen on an
+// `app` import. Both calls are idempotent.
+startExportWorker();
+void registerExportSchedules();
 
 const PORT = process.env.PORT || 5000;
 

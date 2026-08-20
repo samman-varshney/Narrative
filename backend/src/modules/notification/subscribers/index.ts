@@ -2,6 +2,7 @@ import { registerFollowSubscriber } from './follow.subscriber';
 import { registerBlogSubscriber } from './blog.subscriber';
 import { registerCommentSubscriber } from './comment.subscriber';
 import { registerModerationNotificationSubscriber } from './moderation.subscriber';
+import { registerExportNotificationSubscriber } from './export.subscriber';
 import { logger } from '../../../core/utils/logger';
 
 let registered = false;
@@ -26,6 +27,7 @@ export function registerNotificationSubscribers(): void {
   registerBlogSubscriber();
   registerCommentSubscriber();
   registerModerationNotificationSubscriber();
+  registerExportNotificationSubscriber();
 
   logger.info('Notification subscribers registered');
 }

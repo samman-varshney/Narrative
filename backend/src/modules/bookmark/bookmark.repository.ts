@@ -190,6 +190,30 @@ export class BookmarkRepository {
       ...(Object.keys(blogFilter).length > 0 && { blog: blogFilter }),
     };
   }
+
+  /**
+   * One page of this user's bookmarks, for the data export.
+   *
+   * Carries the bookmarked blog's title, slug and author username: a reading
+   * list of opaque ids is not a reading list. Nothing about the other user
+   * beyond their public identity — see the exclusions in EXPORT_MODULE.md.
+   */
+  async findAllByUserForExport(userId: string, take: number, cursorId?: string) {
+    return prisma.bookmark.findMany({
+      where: { userId },
+      orderBy: { id: 'asc' },
+      take,
+      ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),
+      select: {
+        id: true,
+        blogId: true,
+        createdAt: true,
+        blog: {
+          select: { title: true, slug: true, author: { select: { username: true } } },
+        },
+      },
+    });
+  }
 }
 
 export const bookmarkRepository = new BookmarkRepository();

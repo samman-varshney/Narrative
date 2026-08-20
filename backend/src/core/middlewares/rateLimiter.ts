@@ -106,11 +106,26 @@ export const bookmarkWriteLimiter = rateLimit({
  * the thing that must not stop. `adminLimiter` replaces it with a budget sized
  * for a backlog, and every one of those endpoints is permission-gated anyway.
  *
+ * The RSS endpoints are here for the same inversion as search and feed, arriving
+ * from a different direction. A feed reader polls on a timer and an AGGREGATOR
+ * — Feedly, Inoreader, a company's internal reader — polls on behalf of many
+ * subscribers from a handful of addresses. Under the global budget of 100 per 15
+ * minutes, under seven requests a minute, a perfectly well-behaved aggregator
+ * following a few dozen authors would be cut off while doing exactly what the
+ * format is for. `rssLimiter` replaces it with a budget sized for that, and the
+ * requests it admits are overwhelmingly conditional ones the origin answers with
+ * a 304 out of Redis.
+ *
  * `originalUrl` rather than `path`: Express strips the mount prefix from
  * `req.url` inside a `app.use('/api', ...)` middleware, so `req.path` would read
  * `/v1/search/...` here and the check would be quietly mount-dependent.
  */
-export const SELF_LIMITED_PATH_PREFIXES = ['/api/v1/search', '/api/v1/feed', '/api/v1/admin'];
+export const SELF_LIMITED_PATH_PREFIXES = [
+  '/api/v1/search',
+  '/api/v1/feed',
+  '/api/v1/admin',
+  '/api/v1/rss',
+];
 
 export const hasDedicatedLimiter = (req: { originalUrl?: string }): boolean =>
   SELF_LIMITED_PATH_PREFIXES.some((prefix) => (req.originalUrl ?? '').startsWith(prefix));
@@ -346,5 +361,103 @@ export const adminLimiter = rateLimit({
   store: new RedisStore({
     sendCommand: (...args: string[]) => redis.call(args[0], ...args.slice(1)) as any,
     prefix: 'rl:admin:', // Distinct namespace for administrative counters
+  }),
+});
+
+/**
+ * Dedicated limiter for data-export REQUESTS.
+ *
+ * The real control is the per-account cooldown in `exportService` — one export
+ * per 24 hours, enforced against the database and therefore immune to changing
+ * IP. This is the cheap outer layer that stops a script burning CPU on the
+ * cooldown check itself, and it is deliberately per-IP-loose (10/hour) rather
+ * than tight: several people behind one office NAT must each still be able to
+ * ask for their own data.
+ *
+ * Downloads are NOT limited here. Re-downloading an artifact you already own is
+ * a byte transfer, not a build, and someone whose download failed halfway should
+ * not be told to wait.
+ */
+export const exportRequestLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: {
+      code: 'TOO_MANY_REQUESTS',
+      message: 'Too many export requests from this IP, please try again later',
+    },
+  },
+  skip: skipInTests,
+  store: new RedisStore({
+    sendCommand: (...args: string[]) => redis.call(args[0], ...args.slice(1)) as any,
+    prefix: 'rl:export:', // Distinct namespace for export counters
+  }),
+});
+
+
+/**
+ * A 429 for the RSS endpoints, as XML.
+ *
+ * A literal rather than an import: `core/` must not depend on `modules/`, and
+ * this is the one place a core middleware has to know what an RSS response
+ * looks like. Kept to the shape `rss.errors.ts` renders, so a client sees one
+ * error format from the module whether the refusal came from the limiter or
+ * from the feed itself.
+ */
+const RSS_RATE_LIMIT_DOCUMENT = [
+  '<?xml version="1.0" encoding="UTF-8"?>',
+  '<error>',
+  '  <code>TOO_MANY_REQUESTS</code>',
+  '  <message>Too many feed requests from this IP, please poll less often</message>',
+  '</error>',
+  '',
+].join('\n');
+
+/**
+ * Dedicated limiter for the RSS endpoints.
+ *
+ * RSS is the platform's most crawlable surface — public, unauthenticated, and
+ * designed to be fetched on a schedule forever — so it needs a limit of its own
+ * rather than sharing the global one. What that limit has to balance is unusual:
+ * the legitimate traffic is machines, and the abusive traffic is also machines.
+ *
+ * 60 a minute is the balance, and it is generous on purpose. The endpoints
+ * advertise a `<ttl>` of five minutes and answer a conditional request with a
+ * 304 out of Redis, so a well-behaved reader costs almost nothing and never
+ * approaches this. An aggregator polling on behalf of thousands of subscribers
+ * across many feeds has ample headroom, as does a shared NAT.
+ *
+ * The reason a high limit is safe here — and would not be on `/feed` — is that
+ * RSS has NO pagination. `MAX_ITEM_COUNT` caps a feed at 50 items and there is
+ * no cursor, so however many times a scraper asks, it can only ever see the
+ * newest 50 posts of each feed. Enumerating the corpus through this surface is
+ * not slow, it is impossible; the limiter is protecting the database from
+ * pathological polling, not the content from extraction.
+ *
+ * This is the ONLY limit on these paths — see SELF_LIMITED_PATH_PREFIXES above.
+ */
+export const rssLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipInTests,
+  // A custom handler rather than `message`, because express-rate-limit would
+  // send the default JSON/HTML body — and an RSS endpoint that answers a feed
+  // reader with a JSON envelope has changed media type mid-conversation.
+  // `Retry-After` is set explicitly: it is the one header a polling client can
+  // actually act on, and it is what turns a refusal into a backoff.
+  handler: (_req, res) => {
+    res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Retry-After', '60');
+    res.status(429).send(RSS_RATE_LIMIT_DOCUMENT);
+  },
+  store: new RedisStore({
+    sendCommand: (...args: string[]) => redis.call(args[0], ...args.slice(1)) as any,
+    prefix: 'rl:rss:', // Distinct namespace for syndication counters
   }),
 });

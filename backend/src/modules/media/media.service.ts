@@ -13,6 +13,8 @@ import { eventBus, EVENTS } from '../../core/events/eventBus';
 import { activeStorageProvider } from '../../core/providers/storage';
 import { mediaQueue } from '../../core/providers/queue';
 import { logger } from '../../core/utils/logger';
+import { collectPaged } from '../../core/utils/collectPaged';
+import { EXPORT_MAX_ROWS_PER_COLLECTION, EXPORT_PAGE_SIZE } from '../export/export.config';
 
 /** Minimal shape of an uploaded file (satisfied by Express.Multer.File). */
 export interface UploadedFile {
@@ -209,6 +211,23 @@ export class MediaService {
       // Async processing is best-effort; never fail the request because the queue is down.
       logger.warn({ err, mediaId }, 'Failed to enqueue media processing job');
     }
+  }
+
+  /**
+   * Metadata for every file this user uploaded, for the data export.
+   *
+   * Metadata only — never bytes. The files are already served from the URLs in
+   * each record; inlining them would turn a text export into a
+   * hundreds-of-megabytes one and buy the user nothing they cannot already fetch.
+   */
+  async collectForExport(uploadedById: string) {
+    type Row = Awaited<ReturnType<typeof mediaRepository.findAllByUploaderForExport>>[number];
+    return collectPaged<Row>(
+      (previous) =>
+        mediaRepository.findAllByUploaderForExport(uploadedById, EXPORT_PAGE_SIZE, previous?.id),
+      EXPORT_PAGE_SIZE,
+      EXPORT_MAX_ROWS_PER_COLLECTION
+    );
   }
 }
 

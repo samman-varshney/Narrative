@@ -32,6 +32,41 @@ export class MediaRepository {
       skip: offset,
     });
   }
+
+  /**
+   * One page of this user's uploads, for the data export.
+   *
+   * METADATA ONLY — never the file bytes. The images already live at the URLs
+   * recorded here, which the user can fetch directly; inlining them would turn a
+   * text export into a multi-hundred-megabyte one for no capability gained.
+   * Soft-deleted rows are included, since the user did upload them.
+   */
+  async findAllByUploaderForExport(uploadedById: string, take: number, cursorId?: string) {
+    return prisma.media.findMany({
+      where: { uploadedById },
+      orderBy: { id: 'asc' },
+      take,
+      ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),
+      select: {
+        id: true,
+        publicId: true,
+        url: true,
+        secureUrl: true,
+        originalFilename: true,
+        mimeType: true,
+        extension: true,
+        fileSize: true,
+        width: true,
+        height: true,
+        resourceType: true,
+        provider: true,
+        checksum: true,
+        metadata: true,
+        deletedAt: true,
+        createdAt: true,
+      },
+    });
+  }
 }
 
 export const mediaRepository = new MediaRepository();

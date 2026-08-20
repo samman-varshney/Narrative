@@ -24,6 +24,8 @@ import { assertPermission } from '../auth/permissions';
 import { eventBus, EVENTS } from '../../core/events/eventBus';
 import { buildCursorPage, CursorPagination } from '../../core/utils/pagination';
 import { slugify } from '../../core/utils/slug';
+import { collectPaged } from '../../core/utils/collectPaged';
+import { EXPORT_MAX_ROWS_PER_COLLECTION, EXPORT_PAGE_SIZE } from '../export/export.config';
 
 /** The authenticated (or anonymous) requester context for read access control. */
 export interface Viewer {
@@ -986,6 +988,23 @@ export class BlogService {
     const trimmed = plainText.trim();
     if (!trimmed) return null;
     return trimmed.length > 160 ? `${trimmed.slice(0, 157)}…` : trimmed;
+  }
+
+  /**
+   * Everything this author wrote, for the data export.
+   *
+   * Lives here rather than in the Export module because Blog owns the answer to
+   * "what has this person written" — including the judgement that drafts count.
+   * Export composes; it does not query this module's tables.
+   */
+  async collectForExport(authorId: string) {
+    type Row = Awaited<ReturnType<typeof blogRepository.findAllByAuthorForExport>>[number];
+    return collectPaged<Row>(
+      (previous) =>
+        blogRepository.findAllByAuthorForExport(authorId, EXPORT_PAGE_SIZE, previous?.id),
+      EXPORT_PAGE_SIZE,
+      EXPORT_MAX_ROWS_PER_COLLECTION
+    );
   }
 }
 

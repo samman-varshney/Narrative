@@ -9,6 +9,7 @@ export const QUEUES = {
   DOMAIN_EVENTS: 'domain_events',
   MEDIA_PROCESSING: 'media_processing',
   ANALYTICS_FLUSH: 'analytics_flush',
+  DATA_EXPORT: 'data_export',
 };
 
 /**
@@ -85,3 +86,4 @@ export const notificationQueue = createQueue(QUEUES.NOTIFICATION);
 export const domainEventsQueue = createQueue(QUEUES.DOMAIN_EVENTS);
 export const analyticsQueue = createQueue(QUEUES.ANALYTICS_FLUSH);
 export const mediaQueue = createQueue(QUEUES.MEDIA_PROCESSING);
+export const exportQueue = createQueue(QUEUES.DATA_EXPORT);

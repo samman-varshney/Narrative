@@ -217,6 +217,36 @@ export class FollowRepository {
       ...(cursor && { cursor: { id: cursor }, skip: 1 }),
     });
   }
+
+  /**
+   * One page of this user's follow graph in a single direction, for the export.
+   *
+   * `direction` picks which side: 'following' is who they follow, 'followers'
+   * is who follows them. Both are the user's own data — who you chose to follow
+   * is yours, and so is the list you were shown as your audience — but only the
+   * counterparty's PUBLIC identity is included.
+   */
+  async findAllForExport(
+    userId: string,
+    direction: 'followers' | 'following',
+    take: number,
+    cursorId?: string
+  ) {
+    const where =
+      direction === 'following' ? { followerId: userId } : { followingId: userId };
+    const counterparty =
+      direction === 'following'
+        ? { following: { select: { username: true, name: true } } }
+        : { follower: { select: { username: true, name: true } } };
+
+    return prisma.follow.findMany({
+      where,
+      orderBy: { id: 'asc' },
+      take,
+      ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),
+      select: { id: true, createdAt: true, ...counterparty },
+    });
+  }
 }
 
 export const followRepository = new FollowRepository();

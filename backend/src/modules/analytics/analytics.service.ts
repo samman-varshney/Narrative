@@ -44,6 +44,8 @@ import type {
 } from './analytics.validator';
 import { analyticsIngestionService } from './ingestion/RedisAnalyticsIngestionService';
 import type { IAnalyticsIngestionService } from './ingestion/IAnalyticsIngestionService';
+import { collectPaged } from '../../core/utils/collectPaged';
+import { EXPORT_MAX_ROWS_PER_COLLECTION, EXPORT_PAGE_SIZE } from '../export/export.config';
 
 /**
  * The Analytics module's application service.
@@ -686,6 +688,36 @@ export class AnalyticsService {
       end: dateKey(range.endDate),
       granularity: range.granularity,
     };
+  }
+
+  /**
+   * This user's analytics, for the data export: their own daily aggregates plus
+   * the per-blog series for everything they authored.
+   *
+   * Aggregates only. There is no raw event log to export — Analytics never
+   * stores one (see ANALYTICS_MODULE.md): views are deduplicated in Redis and
+   * flushed as daily counters, so the daily row IS the finest grain that exists.
+   */
+  async collectForExport(userId: string) {
+    type BlogDailyExportRow = Awaited<
+      ReturnType<typeof analyticsRepository.findBlogDailyForExport>
+    >[number];
+
+    const [daily, blogDaily] = await Promise.all([
+      analyticsRepository.findUserDailyForExport(userId),
+      collectPaged<BlogDailyExportRow>(
+        (previous) =>
+          analyticsRepository.findBlogDailyForExport(
+            userId,
+            EXPORT_PAGE_SIZE,
+            previous ? { blogId: previous.blogId, date: previous.date } : undefined
+          ),
+        EXPORT_PAGE_SIZE,
+        EXPORT_MAX_ROWS_PER_COLLECTION
+      ),
+    ]);
+
+    return { daily, blogDaily };
   }
 }
 

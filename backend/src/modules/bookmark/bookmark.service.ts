@@ -9,6 +9,8 @@ import { blogService, Viewer } from '../blog/blog.service';
 import { AppError } from '../../core/exceptions/AppError';
 import { eventBus, EVENTS } from '../../core/events/eventBus';
 import { buildCursorPage } from '../../core/utils/pagination';
+import { collectPaged } from '../../core/utils/collectPaged';
+import { EXPORT_MAX_ROWS_PER_COLLECTION, EXPORT_PAGE_SIZE } from '../export/export.config';
 
 /** The author of a bookmarked blog, as it appears on a bookmark card. */
 export interface BookmarkAuthorDTO {
@@ -256,6 +258,17 @@ export class BookmarkService {
       publishedAt: blog.publishedAt,
       visibility: blog.visibility,
     };
+  }
+
+  /** This user's whole reading list, for the data export. */
+  async collectForExport(userId: string) {
+    type Row = Awaited<ReturnType<typeof bookmarkRepository.findAllByUserForExport>>[number];
+    return collectPaged<Row>(
+      (previous) =>
+        bookmarkRepository.findAllByUserForExport(userId, EXPORT_PAGE_SIZE, previous?.id),
+      EXPORT_PAGE_SIZE,
+      EXPORT_MAX_ROWS_PER_COLLECTION
+    );
   }
 }
 

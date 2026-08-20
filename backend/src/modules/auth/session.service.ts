@@ -126,6 +126,33 @@ export class SessionService {
       },
     });
   }
+
+  /**
+   * This user's sign-in sessions, for the data export.
+   *
+   * Device, agent, IP and timestamps — never `refreshTokenHash`. The hash is a
+   * live credential: exporting it would put a working key to the account inside
+   * a file the user is about to email themselves or drop in cloud storage.
+   *
+   * Unlike `getUserSessions`, EXPIRED sessions are included: the sign-in history
+   * is what makes this section worth exporting at all, and a list of only
+   * currently-valid sessions is a status page, not a record.
+   */
+  async collectForExport(userId: string) {
+    return prisma.session.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        deviceId: true,
+        userAgent: true,
+        ipAddress: true,
+        createdAt: true,
+        lastUsedAt: true,
+        expiresAt: true,
+      },
+    });
+  }
 }
 
 export const sessionService = new SessionService();

@@ -488,6 +488,58 @@ export class AnalyticsRepository {
       FROM totals t
     `;
   }
+
+  /**
+   * This user's own daily aggregates, for the data export.
+   *
+   * Unpaged: the grain is one row per calendar day, so the row count is bounded
+   * by the age of the account rather than by their activity. A decade-old
+   * account yields ~3,650 rows.
+   */
+  async findUserDailyForExport(userId: string) {
+    return prisma.userAnalyticsDaily.findMany({
+      where: { userId },
+      orderBy: { date: 'asc' },
+      select: {
+        date: true,
+        followersGained: true,
+        followersLost: true,
+        blogsPublished: true,
+      },
+    });
+  }
+
+  /**
+   * Daily aggregates for every blog this user authored, for the data export.
+   *
+   * Reads by `authorId` — the denormalized column that exists precisely so an
+   * author's whole time series is a single-table scan rather than a join against
+   * Blog. Paged, because this one IS unbounded: rows = blogs x days.
+   */
+  async findBlogDailyForExport(
+    authorId: string,
+    take: number,
+    cursor?: { blogId: string; date: Date }
+  ) {
+    return prisma.blogAnalyticsDaily.findMany({
+      where: { authorId },
+      orderBy: [{ blogId: 'asc' }, { date: 'asc' }],
+      take,
+      ...(cursor ? { cursor: { blogId_date: cursor }, skip: 1 } : {}),
+      select: {
+        blogId: true,
+        date: true,
+        views: true,
+        uniqueViews: true,
+        readStarts: true,
+        readCompletions: true,
+        totalReadingSeconds: true,
+        bookmarks: true,
+        unbookmarks: true,
+        comments: true,
+      },
+    });
+  }
 }
 
 export const analyticsRepository = new AnalyticsRepository();

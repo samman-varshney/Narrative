@@ -13,6 +13,8 @@ import type { ResolvedPreferences } from './notification.types';
 import { userRepository } from '../user/user.repository';
 import { AppError } from '../../core/exceptions/AppError';
 import { buildCursorPage } from '../../core/utils/pagination';
+import { collectPaged } from '../../core/utils/collectPaged';
+import { EXPORT_MAX_ROWS_PER_COLLECTION, EXPORT_PAGE_SIZE } from '../export/export.config';
 
 export interface NotificationActorDTO {
   id: string;
@@ -178,6 +180,23 @@ export class NotificationService {
       readAt: row.readAt,
       createdAt: row.createdAt,
     };
+  }
+
+  /** Every notification this user received, for the data export. */
+  async collectForExport(recipientId: string) {
+    type Row = Awaited<
+      ReturnType<typeof notificationRepository.findAllByRecipientForExport>
+    >[number];
+    return collectPaged<Row>(
+      (previous) =>
+        notificationRepository.findAllByRecipientForExport(
+          recipientId,
+          EXPORT_PAGE_SIZE,
+          previous?.id
+        ),
+      EXPORT_PAGE_SIZE,
+      EXPORT_MAX_ROWS_PER_COLLECTION
+    );
   }
 }
 

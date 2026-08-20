@@ -367,6 +367,26 @@ export class UserService {
     const offset = (page - 1) * limit;
     return userRepository.searchUsers(query, limit, offset);
   }
+
+  /**
+   * The account itself, for the data export: identity, profile, settings,
+   * developer links and skills.
+   *
+   * `passwordHash` is stripped here rather than left to the caller. An export is
+   * the one place where "the caller will remember to remove it" is not an
+   * acceptable design — the artifact is written to storage and handed to a
+   * human, so the credential must never be in the object at all.
+   */
+  async collectForExport(id: string) {
+    const user = await userRepository.getFullProfile(id);
+    if (!user) throw new AppError('User not found', 404);
+
+    const { passwordHash: _, ...account } = user;
+    return {
+      ...account,
+      skills: user.skills.map((entry) => entry.skill.name),
+    };
+  }
 }
 
 export const userService = new UserService();

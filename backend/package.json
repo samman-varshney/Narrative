@@ -15,7 +15,8 @@
     "search:report": "tsx scripts/search-index-report.ts",
     "feed:report": "tsx scripts/feed-index-report.ts",
     "dashboard:report": "tsx scripts/dashboard-index-report.ts",
-    "moderation:report": "tsx scripts/moderation-index-report.ts"
+    "moderation:report": "tsx scripts/moderation-index-report.ts",
+    "rss:report": "tsx scripts/rss-index-report.ts"
   },
   "keywords": [],
   "author": "",

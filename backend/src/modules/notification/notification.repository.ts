@@ -169,6 +169,34 @@ export class NotificationRepository {
       ...(filters.isRead !== undefined && { isRead: filters.isRead }),
     };
   }
+
+  /**
+   * One page of this user's received notifications, for the data export.
+   *
+   * `metadata` is included because it holds the render inputs (blog title,
+   * comment excerpt) — without it a notification row says only that something
+   * happened. The ACTOR is reduced to their public identity: a notification is
+   * the recipient's data, not a licence to export somebody else's.
+   */
+  async findAllByRecipientForExport(recipientId: string, take: number, cursorId?: string) {
+    return prisma.notification.findMany({
+      where: { recipientId },
+      orderBy: { id: 'asc' },
+      take,
+      ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),
+      select: {
+        id: true,
+        type: true,
+        entityType: true,
+        entityId: true,
+        metadata: true,
+        isRead: true,
+        readAt: true,
+        createdAt: true,
+        actor: { select: { username: true, name: true } },
+      },
+    });
+  }
 }
 
 export const notificationRepository = new NotificationRepository();

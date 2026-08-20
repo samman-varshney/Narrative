@@ -23,7 +23,9 @@ import { notificationRoutes } from './modules/notification/notification.routes';
 import { searchRoutes } from './modules/search/search.routes';
 import { analyticsRoutes } from './modules/analytics/analytics.routes';
 import { feedRoutes } from './modules/feed/feed.routes';
+import { exportRoutes } from './modules/export/export.routes';
 import { dashboardRoutes } from './modules/dashboard/dashboard.routes';
+import { rssRoutes } from './modules/rss/rss.routes';
 import { adminRoutes, reportRoutes } from './modules/moderation/moderation.routes';
 
 const app: Application = express();
@@ -113,6 +115,22 @@ app.use('/api/v1/reports', reportRoutes);
 // It is NOT exempt from the global limiter: an admin console is clicked, not
 // scrolled, so the standard budget fits it.
 app.use('/api/v1/admin', adminRoutes);
+
+// Data export. Owns its own mount and sits UNDER the global limiter, with a
+// dedicated limiter on the POST alone — the real control is the per-account
+// 24-hour cooldown enforced in the service, which no IP change can evade.
+app.use('/api/v1/export', exportRoutes);
+
+// RSS & Distribution. Owns its own mount and shares no prefix with another
+// router, so no ordering constraint applies. Exempt from the global limiter and
+// self-limited, like /search and /feed — an aggregator polling on behalf of many
+// subscribers would otherwise be cut off by a budget sized for human browsing.
+// See SELF_LIMITED_PATH_PREFIXES in core/middlewares/rateLimiter.
+//
+// Unlike every other router here, its errors are handled INSIDE it: a public
+// syndication endpoint answers a feed reader in XML, not with the platform's
+// JSON envelope. See modules/rss/rss.errors.ts.
+app.use('/api/v1/rss', rssRoutes);
 
 // Global Error Handler
 app.use(globalErrorHandler);

@@ -364,6 +364,36 @@ export class CommentRepository {
       .map((row) => byId.get(row.id))
       .filter((row): row is ReceivedCommentRow => row !== undefined);
   }
+
+  /**
+   * One page of this author's comments, for the data export.
+   *
+   * Soft-deleted and moderation-hidden comments are included — they were still
+   * written by this person. The parent blog's title and slug ride along because
+   * a bare `blogId` makes an export unreadable to the human who requested it.
+   */
+  async findAllByAuthorForExport(authorId: string, take: number, cursorId?: string) {
+    return prisma.comment.findMany({
+      where: { authorId },
+      orderBy: { id: 'asc' },
+      take,
+      ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),
+      select: {
+        id: true,
+        content: true,
+        blogId: true,
+        parentId: true,
+        depth: true,
+        isEdited: true,
+        editedAt: true,
+        deletedAt: true,
+        isHidden: true,
+        createdAt: true,
+        updatedAt: true,
+        blog: { select: { title: true, slug: true } },
+      },
+    });
+  }
 }
 
 export const commentRepository = new CommentRepository();

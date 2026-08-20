@@ -676,6 +676,60 @@ export class BlogRepository {
     });
     return nextIncrementalSlug(base, rows.map((r) => r.slug));
   }
+
+  /**
+   * One page of this author's blogs, for the data export.
+   *
+   * Drafts, archived and soft-deleted posts are INCLUDED. They are still the
+   * author's writing, and an export that quietly dropped the unpublished work is
+   * missing exactly the part someone leaving the platform most wants back.
+   *
+   * Cursor-paged on `id` rather than offset: an export of a prolific author
+   * would otherwise make Postgres re-walk and discard a growing prefix on every
+   * page. `id` is unique, so it is a total order — which is all a complete dump
+   * needs from its ordering.
+   */
+  async findAllByAuthorForExport(authorId: string, take: number, cursorId?: string) {
+    return prisma.blog.findMany({
+      where: { authorId },
+      orderBy: { id: 'asc' },
+      take,
+      ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),
+      select: {
+        id: true,
+        title: true,
+        slug: true,
+        subtitle: true,
+        content: true,
+        coverImage: true,
+        status: true,
+        visibility: true,
+        isHidden: true,
+        readingTimeMinutes: true,
+        wordCount: true,
+        charCount: true,
+        readingStats: true,
+        createdAt: true,
+        updatedAt: true,
+        publishedAt: true,
+        seo: {
+          select: {
+            metaTitle: true,
+            metaDescription: true,
+            canonicalUrl: true,
+            ogTitle: true,
+            ogDescription: true,
+            ogImage: true,
+            twitterCard: true,
+          },
+        },
+        tags: { select: { addedAt: true, tag: { select: { name: true, slug: true } } } },
+        categories: {
+          select: { addedAt: true, category: { select: { name: true, slug: true } } },
+        },
+      },
+    });
+  }
 }
 
 export const blogRepository = new BlogRepository();

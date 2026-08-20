@@ -1,0 +1,84 @@
+-- RSS & Distribution indexes.
+--
+-- This file adds NO indexes, and that is its content: every RSS feed is already
+-- served by an index another module declared, and recording which one — here,
+-- beside the other index files — is what stops a future change from dropping an
+-- index that has a dependant nobody remembered.
+--
+-- Duplicating them "for RSS" would be strictly worse than nothing: two identical
+-- indexes double the write cost of every publish, every edit and every
+-- moderation action, and buy no read benefit at all. The Feed module reached the
+-- same conclusion for the same reason (see feed_indexes.sql § Shared with
+-- Search).
+--
+-- Applied by `npm run db:indexes` along with the rest of prisma/sql. Running it
+-- is a no-op; keeping the file is not.
+
+-- ---------------------------------------------------------------------------
+-- Global feed  —  GET /api/v1/rss
+-- ---------------------------------------------------------------------------
+-- Walks PUBLISHED + PUBLIC blogs in publication order and stops at LIMIT, which
+-- is exactly what `blog_search_published_idx` indexes (see search_indexes.sql):
+--
+--   ("publishedAt" DESC, "id" DESC) WHERE status = 'PUBLISHED' AND visibility = 'PUBLIC'
+--
+-- That index now has THREE dependants — Search, Feed and RSS — and dropping it
+-- with any one of them would silently turn public discovery, every feed and
+-- every syndicated document into a sequential scan.
+--
+-- This is also why `rss.eligibility.ts` emits the status and visibility
+-- predicate as SQL LITERALS rather than bind parameters: Postgres can only
+-- prove a PARTIAL index applies against constants. Parameterising them would
+-- disqualify this index with nothing in the logs to notice. `rss.db.test.ts`
+-- asserts the plan names it, so that cannot regress unobserved.
+
+-- ---------------------------------------------------------------------------
+-- Author feed  —  GET /api/v1/rss/authors/:username
+-- ---------------------------------------------------------------------------
+-- Two lookups, both already indexed:
+--
+--   the subject   `User.username` is UNIQUE, so resolving the username to an id
+--                 is a unique-index probe. (RSS pays this on every request,
+--                 including cache hits — see rss.service for why that trade is
+--                 made deliberately.)
+--
+--   the posts     `blog_feed_author_public_idx` from feed_indexes.sql:
+--                 ("authorId", "publishedAt" DESC, "id" DESC)
+--                 WHERE status = 'PUBLISHED' AND visibility = 'PUBLIC'
+--                 — the leading `authorId` and the publication ordering are
+--                 precisely this feed's shape. A second dependant for that
+--                 index, recorded here.
+
+-- ---------------------------------------------------------------------------
+-- Category and tag feeds  —  GET /api/v1/rss/{categories,tags}/:slug
+-- ---------------------------------------------------------------------------
+-- The subject is resolved through the UNIQUE index on `Category.slug` /
+-- `Tag.slug`, and the posts through an `EXISTS` subquery against the join table
+-- filtered by the resolved ID — served by `BlogCategory_categoryId_idx` and
+-- `BlogTag_tagId_idx`, both declared in schema.prisma.
+--
+-- The planner has two shapes available and picks between them on selectivity:
+-- walk the published index newest-first and probe the join table's primary key
+-- per row (good for a common term), or walk the term's own index and join back
+-- to Blog (good for a rare one). Both are index-driven; `rss.db.test.ts` asserts
+-- that neither degrades into a sequential scan of "Blog".
+--
+-- ── The index that was deliberately NOT added ──────────────────────────────
+-- The one thing that would strictly beat both plans is a publication timestamp
+-- denormalized onto "BlogTag"/"BlogCategory", indexed as ("tagId",
+-- "publishedAt" DESC), so a tag feed could be answered by an ordered index walk
+-- with no sort. It is not added because it would be a schema change made
+-- exclusively for RSS — a column two modules would then have to keep in step
+-- with `Blog.publishedAt` on every publish, unpublish and republish — and a feed
+-- is bounded at 50 items over a join table that holds a handful of rows per
+-- post. The cost is a sort over a small candidate set, and the price of removing
+-- it is a denormalization with a correctness burden. Recorded as a considered
+-- decision rather than an oversight; revisit it if a single tag ever carries a
+-- six-figure number of posts.
+
+-- ---------------------------------------------------------------------------
+-- SEO and cover joins
+-- ---------------------------------------------------------------------------
+-- `BlogSEO.blogId` is UNIQUE and `Media.id` is the primary key, so both LEFT
+-- JOINs in the feed query are single-row index lookups per item — which is why
+-- they are joined rather than batched. Neither needs an index of its own.

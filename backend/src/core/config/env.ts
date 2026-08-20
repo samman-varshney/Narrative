@@ -97,6 +97,24 @@ const envSchema = z
       .min(-840)
       .max(840)
       .default(0),
+
+    // ---- RSS & Distribution ---------------------------------------------
+
+    /**
+     * Absolute, publicly reachable base URL of the RSS endpoints.
+     *
+     * RSS documents carry their OWN address in `<atom:link rel="self">`, and a
+     * feed reader stores that address rather than the one it was handed — so
+     * getting it wrong sends every subscriber to a URL that may not resolve.
+     * It cannot be derived from the request: `Host` and `X-Forwarded-*` are
+     * attacker-controlled on a public endpoint, and a cached document built
+     * from a spoofed header would then be served to everyone else.
+     *
+     * Optional because the common deployment serves the API and the app from
+     * one origin, where `${APP_URL}/api/v1/rss` is already correct. Set it when
+     * the API lives somewhere else (api.example.com, a path-rewriting proxy).
+     */
+    RSS_SELF_BASE_URL: z.url('Must be a valid absolute URL').optional(),
   })
   .superRefine((data, ctx) => {
     // Resend needs a key only when it is the active transport.

@@ -17,7 +17,7 @@
 * **Account Management**
   * Account deactivation (reversible — hides the account and its content; reactivated by logging in)
   * Account deletion (Soft delete or permanent deletion with confirmation)
-  * Data export (User can request their data)
+  * Data export (User can request their data — asynchronous build, downloadable for 7 days)
 * **Authorization**
   * Roles: User, Admin
   * Route protection and resource ownership checks

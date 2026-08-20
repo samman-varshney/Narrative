@@ -8,6 +8,8 @@ import { userRepository } from '../user/user.repository';
 import { AppError } from '../../core/exceptions/AppError';
 import { eventBus, EVENTS } from '../../core/events/eventBus';
 import { buildCursorPage, CursorPagination } from '../../core/utils/pagination';
+import { collectPaged } from '../../core/utils/collectPaged';
+import { EXPORT_MAX_ROWS_PER_COLLECTION, EXPORT_PAGE_SIZE } from '../export/export.config';
 
 /** A user as it appears in a followers/following list. */
 export interface FollowUserDTO {
@@ -231,6 +233,34 @@ export class FollowService {
       followedAt,
       ...(followedSet && { isFollowedByViewer: followedSet.has(user.id) }),
     }));
+  }
+
+  /**
+   * Both sides of this user's follow graph, for the data export.
+   *
+   * Returned as two named collections rather than one merged list: "who I chose
+   * to follow" and "who chose to follow me" are different facts, and a single
+   * array with a direction flag makes the reader do work the shape could have
+   * done for them.
+   */
+  async collectForExport(userId: string) {
+    type Row = Awaited<ReturnType<typeof followRepository.findAllForExport>>[number];
+    const [following, followers] = await Promise.all([
+      collectPaged<Row>(
+        (previous) =>
+          followRepository.findAllForExport(userId, 'following', EXPORT_PAGE_SIZE, previous?.id),
+        EXPORT_PAGE_SIZE,
+        EXPORT_MAX_ROWS_PER_COLLECTION
+      ),
+      collectPaged<Row>(
+        (previous) =>
+          followRepository.findAllForExport(userId, 'followers', EXPORT_PAGE_SIZE, previous?.id),
+        EXPORT_PAGE_SIZE,
+        EXPORT_MAX_ROWS_PER_COLLECTION
+      ),
+    ]);
+
+    return { following, followers };
   }
 }
 
