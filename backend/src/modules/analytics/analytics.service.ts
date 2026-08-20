@@ -11,7 +11,7 @@ import {
   type TopBlogRow,
   type ViewsRow,
 } from './analytics.repository';
-import { withReportCache } from './analytics.cache';
+import { currentGeneration, withReportCache } from './analytics.cache';
 import { resolveDateRange, resolveTotalsRange } from './analytics.range';
 import { decodeTopBlogsCursor, encodeTopBlogsCursor, topBlogsFingerprint } from './analytics.cursor';
 import {
@@ -35,6 +35,7 @@ import type {
   UserOverviewDTO,
   ViewsPoint,
 } from './analytics.types';
+import { MAX_BUCKETS, MAX_LOOKBACK_DAYS } from './analytics.validator';
 import type {
   DateRangeQuery,
   ReadTelemetryInput,
@@ -399,6 +400,67 @@ export class AnalyticsService {
       nextCursor: cached.nextCursor,
       hasNextPage: cached.hasNextPage,
     };
+  }
+
+  // ---- Reporting contract (for composing modules) ------------------------
+  //
+  // Three small accessors that publish facts a CONSUMER of these reports needs
+  // in order to ask a valid question and to know when the answer changed. They
+  // exist so a composing module (the Dashboard) never has to reach past this
+  // service into `analytics.time`, `analytics.validator` or `analytics.cache`
+  // and re-derive a rule that lives here. The alternative is a sibling module
+  // computing UTC midnights and a hardcoded lookback, which drifts silently the
+  // first time either setting changes.
+
+  /**
+   * The bounds a range request must satisfy.
+   *
+   * `maxLookbackDays` is the retention horizon — rows older than it are pruned,
+   * so a range starting before it is rejected rather than answered with a
+   * misleading empty series. `maxBuckets` caps the points in one series
+   * response; a caller choosing a granularity for a long range needs it to pick
+   * one that will actually be accepted.
+   */
+  getReportingLimits(): { maxLookbackDays: number; maxBuckets: number } {
+    return { maxLookbackDays: MAX_LOOKBACK_DAYS, maxBuckets: MAX_BUCKETS };
+  }
+
+  /**
+   * The inclusive window covering the last `days` reporting days, as the
+   * `YYYY-MM-DD` labels this module's query API accepts.
+   *
+   * Reporting days, not UTC days: aggregates are bucketed by the configured
+   * boundary (`ANALYTICS_REPORTING_UTC_OFFSET_MINUTES`), so a caller computing
+   * calendar dates itself would silently shift the window by up to a day
+   * whenever that setting is not zero. `days: 1` means "today".
+   *
+   * The sibling of `buildEngagementWindow`, which serves the same purpose for
+   * the Feed module — this one returns date labels because its consumer feeds
+   * them straight back into `getUserViews` and friends.
+   */
+  buildReportingWindow(days: number, now: Date = new Date()): {
+    startDate: string;
+    endDate: string;
+  } {
+    return {
+      startDate: dateKey(reportingDaysAgo(days - 1, now)),
+      endDate: dateKey(startOfReportingDay(now)),
+    };
+  }
+
+  /**
+   * The current cache generation for one owner's reports.
+   *
+   * A FRESHNESS TOKEN, not a cache implementation detail escaping: it changes
+   * exactly when the flush worker writes new numbers for this user. A module
+   * that caches a payload CONTAINING these reports embeds it in its own key, so
+   * a flush invalidates that payload at the same instant it invalidates the
+   * reports inside it. Without it, a composed cache's staleness is its own TTL
+   * plus this module's, and the outer layer would go on serving numbers this
+   * one had already superseded.
+   */
+  getReportGeneration(ownerId: string): Promise<number> {
+    return currentGeneration(ownerId);
   }
 
   // ---- Ingestion ---------------------------------------------------------

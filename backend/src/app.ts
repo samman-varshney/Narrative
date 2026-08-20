@@ -23,6 +23,7 @@ import { notificationRoutes } from './modules/notification/notification.routes';
 import { searchRoutes } from './modules/search/search.routes';
 import { analyticsRoutes } from './modules/analytics/analytics.routes';
 import { feedRoutes } from './modules/feed/feed.routes';
+import { dashboardRoutes } from './modules/dashboard/dashboard.routes';
 
 const app: Application = express();
 
@@ -93,6 +94,12 @@ app.use('/api/v1/analytics', analyticsRoutes);
 // /search it is exempt from the global limiter and brings its own — see
 // SELF_LIMITED_PATH_PREFIXES in core/middlewares/rateLimiter.
 app.use('/api/v1/feed', feedRoutes);
+
+// Dashboard owns its own mount and shares no prefix with another router. It is
+// NOT exempt from the global limiter: a dashboard is opened a few times per
+// session rather than scrolled or typed into, so the standard budget fits it —
+// unlike /search and /feed, which had to be exempted.
+app.use('/api/v1/dashboard', dashboardRoutes);
 
 // Global Error Handler
 app.use(globalErrorHandler);

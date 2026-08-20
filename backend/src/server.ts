@@ -14,6 +14,7 @@ import { registerNotificationSubscribers } from './modules/notification/subscrib
 import { registerSearchSubscribers } from './modules/search/subscribers';
 import { registerAnalyticsSubscribers } from './modules/analytics/subscribers';
 import { registerFeedSubscribers } from './modules/feed/subscribers';
+import { registerDashboardSubscribers } from './modules/dashboard/subscribers';
 import { startAnalyticsWorker } from './modules/analytics/analytics.worker';
 import { registerAnalyticsSchedules } from './modules/analytics/analytics.scheduler';
 import { startDomainEventsWorker } from './core/events/domainEvents.worker';
@@ -26,6 +27,7 @@ registerNotificationSubscribers();
 registerSearchSubscribers();
 registerAnalyticsSubscribers();
 registerFeedSubscribers();
+registerDashboardSubscribers();
 startDomainEventsWorker();
 
 // The analytics consumer, then its schedules. Order matters only in that the

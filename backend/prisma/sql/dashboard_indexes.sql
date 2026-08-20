@@ -1,0 +1,97 @@
+-- Dashboard indexes.
+--
+-- Partial indexes are not expressible in Prisma's schema language, so
+-- `prisma db push` never creates these. Every environment must run
+-- `npm run db:indexes` or production will run a different index set than dev —
+-- exactly the drift that hides a sequential scan until deploy day.
+--
+-- Every statement is idempotent, so this is safe to re-run.
+--
+-- PRODUCTION NOTE: `CREATE INDEX` takes an ACCESS EXCLUSIVE lock for the
+-- duration of the build. On a live database with a large "Comment" table, run
+-- this once by hand with `CREATE INDEX CONCURRENTLY` instead (it cannot run
+-- inside a transaction and leaves an INVALID index behind if it fails, which is
+-- why the automated bootstrap path does not use it).
+
+-- ---------------------------------------------------------------------------
+-- Comments received by an author
+-- ---------------------------------------------------------------------------
+-- The dashboard's activity feed asks a question no other module asks: "what did
+-- people say on MY posts, recently". It is a join from Blog (by author) into
+-- Comment, filtered to visible rows, ordered by time, and limited.
+--
+-- ── This index is only worth having because of HOW the query is written ─────
+-- Measured, not assumed. Against a corpus of 200k comments with one prolific
+-- author (300 blogs, 90k comments in the window):
+--
+--   plain join, ORDER BY, LIMIT   — no index     403 ms
+--   plain join, ORDER BY, LIMIT   — this index   402 ms   <- NOT USED
+--   LATERAL top-N per blog        — no index     291 ms
+--   LATERAL top-N per blog        — this index    42 ms   <- 310 index scans
+--
+-- The plain join cannot use it, and the plan is byte-identical with and without
+-- it: an ordering across many blogs cannot be read from a per-blog index without
+-- a merge the planner will not perform under a nested loop, so Postgres sorts
+-- the whole candidate set either way and prefers the existing
+-- `Comment_blogId_deletedAt_idx` for the lookup.
+--
+-- The LATERAL rewrite in `commentRepository.findReceivedByAuthor` asks for the
+-- newest N comments PER BLOG, which is exactly what an ordered per-blog index
+-- answers: the scan stops after N entries instead of reading that blog's whole
+-- history. That is where the 10x comes from, and it is why this file and that
+-- method must be changed together. If the repository ever reverts to a plain
+-- ordered join, this index becomes dead weight on the hottest write path in the
+-- comment system and should be dropped with it — `npm run dashboard:report`
+-- reports the scan count that would show it.
+--
+-- The other Comment indexes do not serve the LATERAL:
+--
+--   ([blogId, parentId, createdAt])  the thread page. `parentId` sits between
+--                                    the two columns this query filters and
+--                                    sorts on, so an ordered per-blog scan
+--                                    cannot use it.
+--   ([blogId, deletedAt])            per-blog lookups. No time ordering, so the
+--                                    per-blog top-N still has to sort.
+--   ([authorId])                     comments a user WROTE, the opposite
+--                                    direction from this query.
+--
+-- ── Why the predicate is on "deletedAt" only ────────────────────────────────
+-- The query also filters `isHidden = false`, and including that in the
+-- predicate is tempting. It would be a trap. Postgres can only prove a partial
+-- index applies when the query's predicate is a LITERAL, and a bound parameter
+-- defeats that proof — so the index would hold under a custom plan and silently
+-- stop being used once the statement flipped to a generic plan, in production,
+-- while every local EXPLAIN still showed it in use.
+--
+-- `deletedAt IS NULL` has no such problem: a null test is emitted as `IS NULL`,
+-- never as a parameter. Hidden comments stay in the index and are filtered after
+-- the scan — there are vanishingly few of them, and a filtered row costs a
+-- comparison, not a plan.
+CREATE INDEX IF NOT EXISTS comment_author_activity_idx
+  ON "Comment" ("blogId", "createdAt" DESC)
+  WHERE "deletedAt" IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- Indexes this module depends on but does NOT create
+-- ---------------------------------------------------------------------------
+-- Recorded rather than duplicated: two identical indexes double the write cost
+-- of every insert for no read benefit, but an undocumented dependency is how an
+-- index gets dropped with the module that created it and quietly degrades
+-- another.
+--
+--   Blog @@index([authorId, status])        every content panel — recent posts,
+--                                           drafts, and the blog counts inside
+--                                           the analytics overview
+--   Blog @@index([authorId])                the join driving the query above
+--   Follow @@index([followingId, createdAt]) follower count + the recent-follower
+--                                           source of the activity feed
+--   Follow @@index([followerId, createdAt])  following count
+--   Bookmark @@index([userId, createdAt])   the saved-content panel and its total
+--   BlogAnalyticsDaily @@index([authorId, date])
+--                                           every number on the stats panel and
+--                                           every chart, via the Analytics module
+--   notification_unread_idx (raw)           the unread badge; see
+--                                           notification_unread_idx.sql
+--
+-- All seven are created elsewhere — the first six by `prisma db push` from
+-- schema.prisma, the last by its own file in this directory.

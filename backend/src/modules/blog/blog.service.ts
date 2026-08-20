@@ -1,6 +1,7 @@
 import { Prisma, BlogStatus } from '@prisma/client';
 import {
   blogRepository,
+  AuthorBlogOrder,
   BlogCard,
   BlogDetail,
   BlogMetaRow,
@@ -407,8 +408,57 @@ export class BlogService {
     return this.paginateAuthor(userId, query, { statuses });
   }
 
-  async getMyDrafts(userId: string, pagination: CursorPagination): Promise<BlogListResult> {
-    return this.paginateAuthor(userId, pagination, { statuses: ['DRAFT'] });
+  /**
+   * The author's drafts.
+   *
+   * `order` defaults to `created`, which is what the existing `/blogs/me/drafts`
+   * endpoint has always returned. A caller that means "the draft I was working
+   * on" — a dashboard panel, say — asks for `updated` explicitly, because
+   * ordering by creation buries a long-running draft under every newer stub.
+   * Left as an opt-in rather than a new default so this module's existing
+   * contract does not shift under a consumer that never asked it to.
+   */
+  async getMyDrafts(
+    userId: string,
+    pagination: CursorPagination,
+    order: AuthorBlogOrder = 'created'
+  ): Promise<BlogListResult> {
+    return this.paginateAuthor(userId, pagination, { statuses: ['DRAFT'], order });
+  }
+
+  /**
+   * A short list of the author's own blogs, without a total count.
+   *
+   * For preview panels that show a handful of rows and no pagination. Ownership
+   * is the caller's own id by construction — there is no parameter for whose
+   * blogs to list — so this cannot be used to read someone else's drafts.
+   */
+  async listMyBlogs(
+    userId: string,
+    options: { statuses: BlogStatus[]; order: AuthorBlogOrder; limit: number }
+  ): Promise<BlogCardDTO[]> {
+    const rows = await blogRepository.listByAuthor(userId, options.limit, {
+      statuses: options.statuses,
+      order: options.order,
+    });
+    return rows.map((b) => this.toCardDTO(b));
+  }
+
+  /**
+   * Cards for a set of the author's own blog ids, keyed by id.
+   *
+   * Batched hydration for a list that arrived from another module — an
+   * analytics ranking returns ids and numbers, and the titles, covers and
+   * statuses have to come from here. A Map because every caller needs it by id,
+   * and building that per call site is how an O(n^2) lookup ends up in a render
+   * loop. Ids the caller does not own are simply absent.
+   */
+  async getMyBlogCards(
+    userId: string,
+    blogIds: string[]
+  ): Promise<Map<string, BlogCardDTO>> {
+    const rows = await blogRepository.findCardsByIds(userId, blogIds);
+    return new Map(rows.map((b) => [b.id, this.toCardDTO(b)]));
   }
 
   async getByAuthor(
@@ -428,7 +478,7 @@ export class BlogService {
   private async paginateAuthor(
     authorId: string,
     pagination: CursorPagination,
-    opts: { statuses: BlogStatus[]; visibility?: 'PUBLIC' }
+    opts: { statuses: BlogStatus[]; visibility?: 'PUBLIC'; order?: AuthorBlogOrder }
   ): Promise<BlogListResult> {
     const [rows, totalCount] = await Promise.all([
       blogRepository.findByAuthor(authorId, pagination, opts),

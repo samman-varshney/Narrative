@@ -1,4 +1,8 @@
-import { commentRepository, CommentRow } from './comment.repository';
+import {
+  commentRepository,
+  CommentRow,
+  ReceivedCommentRow,
+} from './comment.repository';
 import { blogRepository } from '../blog/blog.repository';
 import {
   CreateCommentInput,
@@ -55,6 +59,18 @@ export interface CommentListResult {
   nextCursor: string | null;
   hasNextPage: boolean;
   totalCount: number;
+}
+
+/**
+ * A comment on the author's own blog, carrying the blog it belongs to.
+ *
+ * The extra `blog` is what makes this usable in a list that spans blogs: an
+ * activity row has to say what was commented on, and without it the consumer
+ * would have to look up each blog by id — a per-row query on a list whose whole
+ * point is to be cheap.
+ */
+export interface ReceivedCommentDTO extends CommentDTO {
+  blog: { id: string; title: string; slug: string };
 }
 
 const DELETED_PLACEHOLDER = 'This comment has been deleted.';
@@ -400,6 +416,27 @@ export class CommentService {
     return commentRepository.countForBlogs(blogIds);
   }
 
+  /**
+   * Comments other people left on `authorId`'s blogs, newest first.
+   *
+   * The Comment module's read surface for an author's own activity view. It
+   * lives here — rather than in whatever module wants to display it — because
+   * the rules for which comments "count" (not deleted, not hidden, not the
+   * author's own) are comment policy, and a consumer reimplementing them would
+   * drift from the thread view the first time one of them changed.
+   *
+   * `since` is required by the repository and passed straight through: an
+   * unbounded "every comment I have ever received" scan is not a query this
+   * module offers.
+   */
+  async getReceivedComments(
+    authorId: string,
+    options: { limit: number; since: Date }
+  ): Promise<ReceivedCommentDTO[]> {
+    const rows = await commentRepository.findReceivedByAuthor(authorId, options);
+    return rows.map((row) => this.toReceivedDTO(row));
+  }
+
   // ---- Helpers ----
 
   private sanitize(raw: string): string {
@@ -447,6 +484,20 @@ export class CommentService {
       throw new AppError('Blog not found', 404, 'BLOG_NOT_FOUND');
     }
     return { authorId: blog.authorId };
+  }
+
+  /**
+   * Maps a received-comment row to its DTO.
+   *
+   * Reuses `toCommentDTO` rather than building the shape by hand, so tombstone
+   * handling, `replyCount` and every field name stay identical to the thread
+   * view. The repository already excludes deleted and hidden rows, so the
+   * tombstone branches never fire here — reusing the mapper is about not having
+   * two definitions of a comment on the wire, not about the placeholders.
+   */
+  private toReceivedDTO(row: ReceivedCommentRow): ReceivedCommentDTO {
+    const { blog, ...comment } = row;
+    return { ...toCommentDTO(comment), blog };
   }
 
   private assertOwnership(authorId: string, userId: string, role: string): void {

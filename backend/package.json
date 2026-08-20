@@ -13,7 +13,8 @@
     "db:indexes": "tsx scripts/apply-raw-indexes.ts",
     "db:sync": "prisma db push && npm run db:indexes && prisma generate",
     "search:report": "tsx scripts/search-index-report.ts",
-    "feed:report": "tsx scripts/feed-index-report.ts"
+    "feed:report": "tsx scripts/feed-index-report.ts",
+    "dashboard:report": "tsx scripts/dashboard-index-report.ts"
   },
   "keywords": [],
   "author": "",

@@ -103,6 +103,23 @@ export class FollowService {
   }
 
   /**
+   * Both relationship totals for one user, in one call.
+   *
+   * `getFollowStatus` already returns these, but only alongside a relationship
+   * between two users — asking it for your own totals means passing your id
+   * twice and paying for two existence checks that answer a question nobody
+   * asked. This is the plain "how big is my audience" read, and both counts are
+   * served by the composite indexes' leading column.
+   */
+  async getCounts(userId: string): Promise<{ followers: number; following: number }> {
+    const [followers, following] = await Promise.all([
+      followRepository.countFollowers(userId),
+      followRepository.countFollowing(userId),
+    ]);
+    return { followers, following };
+  }
+
+  /**
    * Paginated followers of `targetId`. When `viewerId` is provided (the caller
    * is authenticated) each item is annotated with `isFollowedByViewer`.
    */

@@ -34,6 +34,7 @@ src/
 │   ├── analytics/
 │   ├── search/
 │   ├── feed/
+│   ├── dashboard/
 │   └── admin/
 ├── app.ts                 # Express app setup and middleware wiring
 └── server.ts              # Entry point and server initialization
@@ -73,6 +74,7 @@ src/
 * **Analytics:** Collects views, reading behaviour, engagement and audience growth via Redis-buffered counters flushed to daily PostgreSQL aggregates by a BullMQ worker. Never writes on the request path. See [ANALYTICS_MODULE.md](./ANALYTICS_MODULE.md).
 * **Search:** Provides cross-entity search (blogs, users, tags, categories) with PostgreSQL full-text + `pg_trgm` ranking behind a swappable engine interface. See [SEARCH_MODULE.md](./SEARCH_MODULE.md).
 * **Feed & Explore:** The content-discovery surface — Following, Latest, Explore and Trending. A pure composition module: it owns discovery eligibility, ranking, diversity, feed pagination and feed caching, and composes Blog, Follow, Analytics, Comment and Bookmark for everything else. See [FEED_MODULE.md](./FEED_MODULE.md).
+* **Dashboard:** The authenticated author's personal overview — content, audience, engagement, top-performing posts, drafts and recent activity. Like Feed, a pure composition module, and deliberately the strictest example of one: it contains **no repository and no SQL**, owning only its API contract, section composition, range vocabulary, chart gap-filling and its own cache. Every fact it serves is produced by Analytics, Blog, Follow, Bookmark, Comment or Notification. See [DASHBOARD_MODULE.md](./DASHBOARD_MODULE.md).
 * **Media:** Handles parsing, validating, and uploading files via `IStorageProvider`.
 * **Admin:** Platform moderation, category management, and user bans.
 
@@ -270,6 +272,46 @@ down, the blog still loads. See [ANALYTICS_MODULE.md](./ANALYTICS_MODULE.md) for
 the full design, the Redis keyspace, the idempotency layers, the index set, and
 the migration path to a dedicated analytics store.
 
+## 11a. Dashboard Flow
+
+The dashboard is a **composition**, not a data source. One authenticated request
+fans out to the modules that own each fact, in parallel, and folds the answers
+into one payload.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant D as Dashboard
+    participant R as Redis
+    participant M as Blog / Analytics / Follow /<br/>Bookmark / Comment / Notification
+
+    C->>D: GET /dashboard/overview?range=30d
+    D->>R: GET dashboard:v1:overview:g{n}.a{m}:{digest}
+    alt cache hit
+        R-->>C: the whole payload, one round trip
+    else miss
+        par eight sections, concurrently
+            D->>M: one service call per section
+        end
+        Note over D,M: overlapping reads collapse to one call each<br/>via a per-request memo
+        M-->>D: allSettled — a failed section becomes null
+        D->>R: SET (only if nothing degraded)
+        D-->>C: 200 + meta.degradedSections
+    end
+```
+
+Two properties are worth carrying into any future composition module:
+
+* **The cache key embeds the Analytics generation as well as its own**, so a
+  composed payload can never outlive the reports inside it — a staleness bug no
+  arrangement of TTLs can prevent.
+* **A failing subsystem degrades one panel, not the page.** The response stays a
+  200, names the degraded sections, and is not cached.
+
+Dashboard reaches no database directly and nothing depends on it, which is what
+keeps `Dashboard → Analytics → Dashboard` structurally impossible. See
+[DASHBOARD_MODULE.md](./DASHBOARD_MODULE.md).
+
 ## 12. Database Access Strategy
 
 * **Prisma ORM:** Used for schema definition, migrations, and type-safe querying.
@@ -278,7 +320,7 @@ the migration path to a dedicated analytics store.
 ## 13. Caching Strategy (Redis)
 
 * **Read-Heavy Endpoints:** Responses for endpoints like the feeds, search and public profiles are cached in Redis as serialized JSON.
-* **Invalidation — generation counters, not key deletion:** cache entries carry a TTL, and a relevant domain event advances a per-scope GENERATION number that is part of every key. Invalidation is then one `INCR` and old entries become unreachable instantly, whatever the cache size. The `DEL cache:home_feed` approach this document originally described cannot work for a feed or a search cache: the key encodes the filters, options and cursor, so the set of keys a single publish invalidates is unknowable without re-running every cached query, and `SCAN`/`KEYS` over a shared Redis is O(keyspace). Both the Search and Feed modules use generations; Analytics can be more precise still (per-author generations) because a flush knows exactly whose numbers changed.
+* **Invalidation — generation counters, not key deletion:** cache entries carry a TTL, and a relevant domain event advances a per-scope GENERATION number that is part of every key. Invalidation is then one `INCR` and old entries become unreachable instantly, whatever the cache size. The `DEL cache:home_feed` approach this document originally described cannot work for a feed or a search cache: the key encodes the filters, options and cursor, so the set of keys a single publish invalidates is unknowable without re-running every cached query, and `SCAN`/`KEYS` over a shared Redis is O(keyspace). Both the Search and Feed modules use generations; Analytics can be more precise still (per-author generations) because a flush knows exactly whose numbers changed. The Dashboard module carries TWO generations in every key — its own and the Analytics one — because it caches a payload that CONTAINS analytics reports, and an outer cache that outlives its inner one serves numbers the same client can see are stale from another endpoint.
 * **Never load-bearing:** every cache read and write is best-effort. Redis being down must degrade a response to "uncached", never to a 500.
 
 ## 14. Background Job Strategy (BullMQ)
@@ -388,6 +430,7 @@ graph TD
         Notif[Notification Module]
         Analyt[Analytics Module]
         Feed[Feed & Explore Module]
+        Dash[Dashboard Module]
     end
     
     subgraph Core
@@ -411,6 +454,7 @@ graph TD
     EventBus -- Listens --> Notif
     EventBus -- Listens --> Analyt
     EventBus -- Listens --> Feed
+    EventBus -- Listens --> Dash
 
     %% Feed is a leaf: it composes sibling SERVICES and nothing depends on it,
     %% so no cycle (Blog -> Feed -> Blog) can form.
@@ -419,6 +463,16 @@ graph TD
     Feed --> Analyt
     Feed --> Comment
     Feed --> Bookmark
+
+    %% Dashboard is the other leaf, and the stricter one: it reaches no database
+    %% at all. Every arrow below is a call to a sibling SERVICE, and nothing
+    %% depends on Dashboard — so Dashboard -> Analytics -> Dashboard cannot form.
+    Dash --> Analyt
+    Dash --> Blog
+    Dash --> Follow
+    Dash --> Bookmark
+    Dash --> Comment
+    Dash --> Notif
 
     Analyt --> Redis[(Redis buffer)]
     Redis -- BullMQ flush --> DB

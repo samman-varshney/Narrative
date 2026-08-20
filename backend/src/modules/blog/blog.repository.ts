@@ -130,10 +130,35 @@ export interface CreateBlogData {
   seo: SeoWrite;
 }
 
-/** Filter options for author-scoped blog listings. */
+/**
+ * Sort key for author-scoped listings.
+ *
+ * Three keys because the three author-facing views genuinely order by different
+ * things: "my blogs" by when they were written, a draft list by when it was last
+ * touched (the one a writer means by "recent"), and a published list by when it
+ * went out. Every one is paired with an `id` tiebreaker at the query, so the
+ * ordering is total and a cursor can neither skip nor repeat a row.
+ */
+export type AuthorBlogOrder = 'created' | 'updated' | 'published';
+
+const AUTHOR_ORDER_BY: Record<AuthorBlogOrder, Prisma.BlogOrderByWithRelationInput[]> = {
+  created: [{ createdAt: 'desc' }, { id: 'desc' }],
+  updated: [{ updatedAt: 'desc' }, { id: 'desc' }],
+  // NULLS come last in Postgres for DESC, so a never-published blog that slipped
+  // into the filter sorts to the end rather than to the top.
+  published: [{ publishedAt: 'desc' }, { id: 'desc' }],
+};
+
+/** Filter and ordering options for author-scoped blog listings. */
 export interface AuthorFilter {
   statuses?: BlogStatus[];
   visibility?: BlogVisibility;
+  /**
+   * Sort key, defaulting to `created`. Ignored by the count queries, which have
+   * no ordering — they share `authorWhere` with the list so the two can never
+   * describe different sets.
+   */
+  order?: AuthorBlogOrder;
 }
 
 export interface UpdateBlogData {
@@ -339,9 +364,48 @@ export class BlogRepository {
     return prisma.blog.findMany({
       where: this.authorWhere(authorId, opts),
       select: blogCardSelect,
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      orderBy: AUTHOR_ORDER_BY[opts.order ?? 'created'],
       take: limit + 1,
       ...(cursor && { cursor: { id: cursor }, skip: 1 }),
+    });
+  }
+
+  /**
+   * A short, uncursored list of one author's blogs.
+   *
+   * The preview-widget primitive: no cursor, and — the point — no companion
+   * count. `findByAuthor` is always paired with `countByAuthor` because a paged
+   * list has to report a total; a five-item dashboard panel does not, and paying
+   * for that count on every panel is how an aggregation endpoint quietly doubles
+   * its query count.
+   */
+  listByAuthor(
+    authorId: string,
+    limit: number,
+    opts: AuthorFilter = {}
+  ): Promise<BlogCard[]> {
+    return prisma.blog.findMany({
+      where: this.authorWhere(authorId, opts),
+      select: blogCardSelect,
+      orderBy: AUTHOR_ORDER_BY[opts.order ?? 'created'],
+      take: limit,
+    });
+  }
+
+  /**
+   * Cards for a known set of the author's blog ids, in ONE query.
+   *
+   * `authorId` is part of the filter and not merely assumed from the ids: a
+   * caller that passed an id it does not own gets nothing back rather than
+   * another author's blog. Hydration for a list that arrived from elsewhere —
+   * an analytics ranking, say — is the only reason this exists, and the batching
+   * is the reason it is a repository method instead of a loop over `findById`.
+   */
+  findCardsByIds(authorId: string, ids: string[]): Promise<BlogCard[]> {
+    if (ids.length === 0) return Promise.resolve([]);
+    return prisma.blog.findMany({
+      where: { id: { in: ids }, authorId },
+      select: blogCardSelect,
     });
   }
 
