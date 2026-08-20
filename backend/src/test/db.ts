@@ -71,9 +71,11 @@ export async function makeBlog(
   overrides: Partial<{
     title: string;
     slug: string;
+    subtitle: string | null;
     status: 'DRAFT' | 'PUBLISHED' | 'ARCHIVED' | 'DELETED';
     visibility: 'PUBLIC' | 'UNLISTED' | 'PRIVATE' | 'MEMBERS_ONLY';
     publishedAt: Date | null;
+    readingTimeMinutes: number;
   }> = {}
 ) {
   const n = next();
@@ -82,9 +84,11 @@ export async function makeBlog(
     data: {
       title: overrides.title ?? `Blog ${n}`,
       slug: overrides.slug ?? `blog-${n}`,
+      subtitle: overrides.subtitle ?? null,
       authorId,
       status,
       visibility: overrides.visibility ?? 'PUBLIC',
+      readingTimeMinutes: overrides.readingTimeMinutes ?? 0,
       publishedAt:
         overrides.publishedAt !== undefined
           ? overrides.publishedAt
@@ -92,6 +96,36 @@ export async function makeBlog(
             ? new Date('2026-01-01T00:00:00Z')
             : null,
     },
+  });
+}
+
+/** Tag vocabulary entry. `slug` defaults to the lowercased name. */
+export async function makeTag(name: string, slug?: string) {
+  return prisma.tag.create({ data: { name, slug: slug ?? name.toLowerCase() } });
+}
+
+/** Curated category. `slug` defaults to the lowercased name. */
+export async function makeCategory(name: string, slug?: string) {
+  return prisma.category.create({ data: { name, slug: slug ?? name.toLowerCase() } });
+}
+
+export async function tagBlog(blogId: string, tagId: string) {
+  return prisma.blogTag.create({ data: { blogId, tagId } });
+}
+
+export async function categorizeBlog(blogId: string, categoryId: string) {
+  return prisma.blogCategory.create({ data: { blogId, categoryId } });
+}
+
+/** Writes a user's settings row — used by tests that exercise privacy rules. */
+export async function makeUserSettings(
+  userId: string,
+  settings: Partial<{ isPrivate: boolean; hideActivity: boolean; hideEmail: boolean }>
+) {
+  return prisma.userSettings.upsert({
+    where: { userId },
+    update: settings,
+    create: { userId, ...settings },
   });
 }
 
