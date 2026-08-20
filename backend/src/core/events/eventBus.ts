@@ -181,6 +181,28 @@ export const EVENTS = {
   USER_SETTINGS_UPDATED: 'USER_SETTINGS_UPDATED',
   USER_DELETED: 'USER_DELETED',
 
+  // Self-service account lifecycle — payloads:
+  //  USER_DEACTIVATED { userId }
+  //  USER_REACTIVATED { userId }
+  //
+  // Deliberately NOT reusing USER_SUSPENDED/USER_UNSUSPENDED even though the
+  // enforcement is identical (revoke sessions, prime the status cache). A
+  // subscriber that cannot tell "the user left" from "a moderator acted" will
+  // eventually get it wrong where it matters — Notification must not email
+  // someone a suspension notice for a button they pressed themselves, and the
+  // moderation audit log must not gain entries with no actor.
+  //
+  // Consumers today: Auth (revokes sessions, primes the account status cache),
+  // Feed and Search (drop the cached pages that still carry the account).
+  //
+  // No blog row is ever touched: the discovery predicate is already
+  // `u."status" = 'ACTIVE'`, so a deactivated author's whole catalogue leaves
+  // every surface on the next uncached read, and comes back on reactivation for
+  // the same reason. The cache invalidation is what makes that take effect NOW
+  // rather than at TTL — the same gap USER_SUSPENDED closes.
+  USER_DEACTIVATED: 'USER_DEACTIVATED',
+  USER_REACTIVATED: 'USER_REACTIVATED',
+
   // Media — payloads:
   //  MEDIA_UPLOADED { mediaId, userId, secureUrl }
   //  MEDIA_REPLACED { mediaId, userId, secureUrl, oldPublicId }
@@ -249,4 +271,43 @@ export const EVENTS = {
   //  BLOG_UNBOOKMARKED { blogId, userId }
   BLOG_BOOKMARKED: 'BLOG_BOOKMARKED',
   BLOG_UNBOOKMARKED: 'BLOG_UNBOOKMARKED',
+
+  // Moderation — reports. Emitted by the Moderation module, which owns reports.
+  //  REPORT_CREATED   { reportId, targetType, targetId, targetOwnerId, reporterId, reason, source }
+  //  REPORT_ASSIGNED  { reportId, moderatorId, targetType, targetId }
+  //  REPORT_RESOLVED  { reportId, moderatorId, targetType, targetId, resolution }
+  //  REPORT_DISMISSED { reportId, moderatorId, targetType, targetId }
+  //
+  // A report is a request for review, never a decision, so NOTHING subscribes to
+  // these to change what is visible. They exist for operational awareness —
+  // queue depth, moderator throughput — and as the seam a future triage
+  // automation would hook into.
+  REPORT_CREATED: 'REPORT_CREATED',
+  REPORT_ASSIGNED: 'REPORT_ASSIGNED',
+  REPORT_RESOLVED: 'REPORT_RESOLVED',
+  REPORT_DISMISSED: 'REPORT_DISMISSED',
+
+  // Moderation — outcomes. Emitted by the module that OWNS the thing which
+  // changed (Blog, Comment, User), not by Moderation: the fact is "this blog is
+  // now hidden", and the only code that can truthfully state it is the code that
+  // hid it. Moderation orchestrates and audits; it does not narrate.
+  //
+  //  CONTENT_MODERATED { targetType: 'BLOG' | 'COMMENT', targetId, ownerId, actorId, action, reason? }
+  //  CONTENT_RESTORED  { targetType: 'BLOG' | 'COMMENT', targetId, ownerId, actorId, revived }
+  //
+  // `revived` distinguishes the two things a restore can undo: false lifts a
+  // hide and the content is public again; true brings back a REMOVAL, and a
+  // revived blog returns as a DRAFT — so the notification must not tell its
+  // author it is visible when it is not.
+  //  USER_SUSPENDED    { userId, actorId, reason? }
+  //  USER_UNSUSPENDED  { userId, actorId }
+  //
+  // Consumers today: Notification (tells the author), Feed and Search (drop the
+  // content from their caches), Auth (revokes sessions and primes the account
+  // status cache on suspension). None of them depends on the Moderation module —
+  // they subscribe to a fact, exactly as they already do for BLOG_PUBLISHED.
+  CONTENT_MODERATED: 'CONTENT_MODERATED',
+  CONTENT_RESTORED: 'CONTENT_RESTORED',
+  USER_SUSPENDED: 'USER_SUSPENDED',
+  USER_UNSUSPENDED: 'USER_UNSUSPENDED',
 };

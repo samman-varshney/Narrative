@@ -1,6 +1,10 @@
 import { Router } from 'express';
 import { followController } from './follow.controller';
-import { requireAuth, optionalAuth } from '../../core/middlewares/requireAuth';
+import {
+  requireAuth,
+  optionalAuth,
+  requireActiveAccount,
+} from '../../core/middlewares/requireAuth';
 import { catchAsync } from '../../core/utils/asyncHandler';
 
 /**
@@ -14,7 +18,16 @@ import { catchAsync } from '../../core/utils/asyncHandler';
  */
 const router = Router();
 
-router.post('/:userId/follow', requireAuth, catchAsync(followController.follow));
+// Following is an outward action: it notifies the person followed, and a
+// suspended account must not be able to reach anyone that way. Unfollowing stays
+// open — nothing is gained by trapping a suspended user in their follow graph,
+// and it notifies nobody.
+router.post(
+  '/:userId/follow',
+  requireAuth,
+  requireActiveAccount,
+  catchAsync(followController.follow)
+);
 router.delete('/:userId/follow', requireAuth, catchAsync(followController.unfollow));
 
 router.get('/:userId/followers', optionalAuth, catchAsync(followController.getFollowers));

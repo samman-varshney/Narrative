@@ -1,5 +1,6 @@
 import request from 'supertest';
 import app from '../../../app';
+import { allowActiveAccounts } from '../../../test/auth';
 import { blogService } from '../blog.service';
 import { tokensService } from '../../auth/tokens.service';
 import { AppError } from '../../../core/exceptions/AppError';
@@ -19,7 +20,11 @@ const mocked = blogService as jest.Mocked<typeof blogService>;
 const BLOG = { id: 'blog-1', slug: 'hello-world', title: 'Hello World', status: 'DRAFT' };
 const PAGE = { items: [BLOG], nextCursor: null, hasNextPage: false, totalCount: 1 };
 
-beforeEach(() => jest.clearAllMocks());
+beforeEach(() => {
+  jest.clearAllMocks();
+  // Blog writes sit behind `requireActiveAccount`; see src/test/auth.ts.
+  allowActiveAccounts();
+});
 
 describe('POST /api/v1/blogs', () => {
   it('returns 401 without a token', async () => {

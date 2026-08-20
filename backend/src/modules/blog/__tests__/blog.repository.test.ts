@@ -7,6 +7,7 @@ jest.mock('../../../core/database/prisma', () => ({
       update: jest.fn(),
       findUnique: jest.fn(),
       findMany: jest.fn(),
+      updateMany: jest.fn(),
       count: jest.fn(),
     },
     tag: {
@@ -135,5 +136,57 @@ describe('findExistingCategoryIds', () => {
   it('returns the ids that exist', async () => {
     db.category.findMany.mockResolvedValue([{ id: 'c1' }]);
     await expect(blogRepository.findExistingCategoryIds(['c1', 'c2'])).resolves.toEqual(['c1']);
+  });
+});
+
+describe('moderation writers', () => {
+  it('moderationDelete hides the blog as well as deleting it', async () => {
+    db.blog.updateMany.mockResolvedValue({ count: 1 });
+
+    await expect(blogRepository.moderationDelete('blog-1')).resolves.toBe(true);
+
+    const [call] = db.blog.updateMany.mock.calls;
+    // The hide flag is what `assertNotModerated` reads, and it is the ONLY
+    // thing standing between a removal and its author undoing it with
+    // `POST /blogs/:id/restore`. Asserted on the write itself, because a later
+    // refactor that "tidies" it away would silently reopen that door.
+    expect(call[0].data).toMatchObject({
+      status: 'DELETED',
+      isHidden: true,
+      hiddenAt: expect.any(Date),
+    });
+    expect(call[0].where).toEqual({ id: 'blog-1', status: { not: 'DELETED' } });
+  });
+
+  it('moderationDelete reports a lost race rather than claiming the write', async () => {
+    db.blog.updateMany.mockResolvedValue({ count: 0 });
+    await expect(blogRepository.moderationDelete('blog-1')).resolves.toBe(false);
+  });
+
+  it('moderationRestore lifts a hide without touching the status', async () => {
+    db.blog.updateMany.mockResolvedValue({ count: 1 });
+
+    await blogRepository.moderationRestore('blog-1', { revive: false });
+
+    const [call] = db.blog.updateMany.mock.calls;
+    expect(call[0].where).toEqual({
+      id: 'blog-1',
+      isHidden: true,
+      status: { not: 'DELETED' },
+    });
+    expect(call[0].data).toEqual({ isHidden: false, hiddenAt: null });
+    expect(call[0].data).not.toHaveProperty('status');
+  });
+
+  it('moderationRestore revives a removal into DRAFT, never back into PUBLISHED', async () => {
+    db.blog.updateMany.mockResolvedValue({ count: 1 });
+
+    await blogRepository.moderationRestore('blog-1', { revive: true });
+
+    const [call] = db.blog.updateMany.mock.calls;
+    // Both halves of the marker are in the WHERE: a revive must only ever fire
+    // on a row that moderation itself removed.
+    expect(call[0].where).toEqual({ id: 'blog-1', isHidden: true, status: 'DELETED' });
+    expect(call[0].data).toEqual({ isHidden: false, hiddenAt: null, status: 'DRAFT' });
   });
 });

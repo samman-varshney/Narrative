@@ -15,6 +15,7 @@
   * Forgot password / Reset password
   * Change password
 * **Account Management**
+  * Account deactivation (reversible — hides the account and its content; reactivated by logging in)
   * Account deletion (Soft delete or permanent deletion with confirmation)
   * Data export (User can request their data)
 * **Authorization**

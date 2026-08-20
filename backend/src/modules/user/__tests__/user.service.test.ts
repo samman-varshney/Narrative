@@ -120,4 +120,105 @@ describe('UserService', () => {
       expect(activeStorageProvider.delete).not.toHaveBeenCalled();
     });
   });
+
+  describe('deactivate', () => {
+    it('transitions ACTIVE → DEACTIVATED, stamps the time, and emits the fact', async () => {
+      (userRepository.transitionStatus as jest.Mock).mockResolvedValue(true);
+
+      await userService.deactivate('123');
+
+      expect(userRepository.transitionStatus).toHaveBeenCalledWith(
+        '123',
+        ['ACTIVE'],
+        'DEACTIVATED',
+        { deactivatedAt: expect.any(Date) }
+      );
+      expect(eventBus.emit).toHaveBeenCalledWith(EVENTS.USER_DEACTIVATED, { userId: '123' });
+    });
+
+    /**
+     * The security property, asserted at the layer that enforces it rather than
+     * at the route guard above it: only an ACTIVE account may deactivate. A
+     * SUSPENDED one that could would reactivate itself on the next login.
+     */
+    it('only ever accepts ACTIVE as the source state', async () => {
+      (userRepository.transitionStatus as jest.Mock).mockResolvedValue(true);
+
+      await userService.deactivate('123');
+
+      const [, expected] = (userRepository.transitionStatus as jest.Mock).mock.calls[0];
+      expect(expected).toEqual(['ACTIVE']);
+      expect(expected).not.toContain('SUSPENDED');
+    });
+
+    it('rejects with 409 when the account was not ACTIVE, and emits nothing', async () => {
+      (userRepository.transitionStatus as jest.Mock).mockResolvedValue(false);
+
+      await expect(userService.deactivate('123')).rejects.toThrow('Account is not active');
+      expect(eventBus.emit).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('reactivate', () => {
+    it('transitions DEACTIVATED → ACTIVE, clears the stamp, and emits the fact', async () => {
+      (userRepository.transitionStatus as jest.Mock).mockResolvedValue(true);
+
+      await expect(userService.reactivate('123')).resolves.toBe(true);
+
+      expect(userRepository.transitionStatus).toHaveBeenCalledWith(
+        '123',
+        ['DEACTIVATED'],
+        'ACTIVE',
+        { deactivatedAt: null }
+      );
+      expect(eventBus.emit).toHaveBeenCalledWith(EVENTS.USER_REACTIVATED, { userId: '123' });
+    });
+
+    /**
+     * Returns false instead of throwing: the only caller is a login that has
+     * already verified a password and must still succeed. It also must not emit
+     * a second USER_REACTIVATED for a transition it did not perform.
+     */
+    it('reports no-op without throwing or emitting when the row was not DEACTIVATED', async () => {
+      (userRepository.transitionStatus as jest.Mock).mockResolvedValue(false);
+
+      await expect(userService.reactivate('123')).resolves.toBe(false);
+      expect(eventBus.emit).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('suspend, against a self-deactivated account', () => {
+    const actor = { userId: 'mod-1', role: 'ADMIN' };
+
+    beforeEach(() => {
+      (userRepository.findModerationSummaryById as jest.Mock).mockResolvedValue({
+        id: '123',
+        role: 'USER',
+        status: 'DEACTIVATED',
+      });
+      (userRepository.transitionStatus as jest.Mock).mockResolvedValue(true);
+    });
+
+    /**
+     * Deactivation must not be a shield. If DEACTIVATED were absent from the
+     * expected list, a user under investigation could hide, and the moderator's
+     * suspend would fail the conditional UPDATE and surface as a misleading
+     * "already suspended" conflict.
+     */
+    it('suspends it, clearing the deactivation stamp', async () => {
+      await userService.suspend('123', actor, 'spam');
+
+      expect(userRepository.transitionStatus).toHaveBeenCalledWith(
+        '123',
+        ['ACTIVE', 'DEACTIVATED'],
+        'SUSPENDED',
+        { suspendedAt: expect.any(Date), suspendedReason: 'spam', deactivatedAt: null }
+      );
+      expect(eventBus.emit).toHaveBeenCalledWith(EVENTS.USER_SUSPENDED, {
+        userId: '123',
+        actorId: 'mod-1',
+        reason: 'spam',
+      });
+    });
+  });
 });

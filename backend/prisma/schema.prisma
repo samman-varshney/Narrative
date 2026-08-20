@@ -12,13 +12,27 @@ datasource db {
   provider = "postgresql"
 }
 
+/// Platform roles. The role is a COARSE bucket; the fine-grained capability
+/// check is the permission catalogue in `modules/auth/permissions.ts`, which
+/// maps each role to the permissions it holds. Adding a role (support admin,
+/// content moderator, ...) is an entry here plus an entry there — no controller
+/// or service changes, because nothing checks a role name directly.
 enum Role {
   USER
+  MODERATOR
   ADMIN
 }
 
 enum UserStatus {
   ACTIVE
+
+  /// Self-service, reversible, and invisible to everyone else — the user asked
+  /// to disappear. Distinct from SUSPENDED (imposed by a moderator, reversible
+  /// only by one) and from DELETED (terminal). Reactivation happens on the next
+  /// successful login: the password check IS the confirmation, so there is no
+  /// separate token flow to build or expire.
+  DEACTIVATED
+
   SUSPENDED
   DELETED
 }
@@ -79,9 +93,26 @@ model User {
   avatar       String? // denormalized secureUrl of the current avatar (kept for convenience)
   role         Role    @default(USER)
 
+  /// The single account-status model on the platform. Moderation SUSPENDS by
+  /// writing `SUSPENDED` here through `userService`, never by introducing a
+  /// second flag — Auth already refuses a login and a refresh for it, and
+  /// Feed/Search eligibility already excludes non-ACTIVE authors.
   status     UserStatus @default(ACTIVE)
   isVerified Boolean    @default(false)
   verifiedAt DateTime?
+
+  /// When the CURRENT suspension began, and why. Descriptive only: `status` is
+  /// the enforcement point and the ModerationAction log is the audit record.
+  /// Kept on the row so an admin viewing an account does not need a log query
+  /// to answer "since when", and cleared on unsuspend.
+  suspendedAt     DateTime?
+  suspendedReason String?   @db.Text
+
+  /// When the user deactivated themselves. Descriptive only, like `suspendedAt`:
+  /// `status` is the enforcement point. Cleared on reactivation and on
+  /// suspension, so it never describes an account that is not DEACTIVATED.
+  /// No accompanying reason column — a self-service exit owes nobody one.
+  deactivatedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -102,6 +133,13 @@ model User {
 
   notifications      Notification[] @relation("NotificationRecipient")
   actedNotifications Notification[] @relation("NotificationActor")
+
+  // Moderation. Four separate relations because one user can appear in a report
+  // in four distinct roles, and a single relation could not tell them apart.
+  reportsFiled      Report[]           @relation("ReportReporter")
+  reportsAssigned   Report[]           @relation("ReportAssignee")
+  reportsResolved   Report[]           @relation("ReportResolver")
+  moderationActions ModerationAction[] @relation("ModerationActor")
 
   analyticsDaily     UserAnalyticsDaily[]
   blogAnalyticsDaily BlogAnalyticsDaily[] @relation("BlogAnalyticsAuthor")
@@ -218,6 +256,18 @@ model Blog {
 
   status     BlogStatus     @default(DRAFT)
   visibility BlogVisibility @default(PUBLIC)
+
+  /// Moderation hide — the blog-side twin of `Comment.isHidden`, which has
+  /// carried exactly this meaning since the Comment module shipped.
+  ///
+  /// Deliberately NOT a new `BlogStatus` value and NOT a reuse of ARCHIVED:
+  /// status is the AUTHOR's lifecycle (draft → published → archived) and the
+  /// author can move it freely, so encoding a moderation decision there would
+  /// let the author undo it with a normal publish. This is an orthogonal axis
+  /// only moderation writes: while it is set, every author-side transition is
+  /// refused and the blog is excluded from every discovery surface.
+  isHidden Boolean   @default(false)
+  hiddenAt DateTime?
 
   readingTimeMinutes Int   @default(0)
   wordCount          Int   @default(0)
@@ -337,7 +387,8 @@ model Comment {
 
   // Lifecycle / moderation — tombstones stay in the tree so children remain visible.
   deletedAt DateTime? // author/admin soft delete
-  isHidden  Boolean   @default(false) // admin moderation hide
+  isHidden  Boolean   @default(false) // moderation hide
+  hiddenAt  DateTime? // when the moderation hide was applied (null when visible)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -582,4 +633,213 @@ model UserAnalyticsDaily {
 
   @@id([userId, date])
   @@index([date])
+}
+
+// ---------------------------------------------------------------------------
+// Moderation & Administration
+// ---------------------------------------------------------------------------
+// Two tables, and deliberately only two: what the community FLAGGED (Report)
+// and what a moderator DID (ModerationAction). Everything a moderation decision
+// changes — a blog's `isHidden`, a comment's `isHidden`, a user's `status` —
+// stays in the table owned by the module that owns that concept, written
+// through that module's service. Moderation never writes another module's rows,
+// so there is exactly one definition of "is this blog visible" and moderation
+// is not a second one.
+//
+// Both tables are polymorphic over `targetType` + `targetId` with NO foreign key
+// to the target. That is a deliberate trade: a real FK would need one nullable
+// column and one relation per target type, and adding a fifth reportable thing
+// would be a migration on both tables plus a schema change on User. The cost is
+// that a dangling `targetId` is possible (its blog was hard-deleted) — handled
+// at read time by hydrating targets in a batch and rendering the ones that
+// resolve. See MODERATION_MODULE.md § Database design.
+
+/// What a user can report. Narrower than ModerationTargetType: REPORT is a
+/// moderation target (a report gets claimed and resolved) but is not something
+/// a member of the public can file a report about.
+enum ReportTargetType {
+  BLOG
+  COMMENT
+  USER
+}
+
+enum ReportReason {
+  SPAM
+  HARASSMENT
+  HATE_SPEECH
+  VIOLENCE
+  SEXUAL_CONTENT
+  MISINFORMATION
+  SELF_HARM
+  COPYRIGHT
+  IMPERSONATION
+  OTHER
+}
+
+enum ReportStatus {
+  PENDING
+  REVIEWING
+  RESOLVED
+  DISMISSED
+}
+
+/// Who filed it. AUTOMATED reports come from the content-evaluation provider
+/// (see `moderation/providers`) and carry no reporter. Kept as a column rather
+/// than inferred from `reporterId IS NULL`, because a report whose reporter was
+/// later erased is not the same thing as one the platform raised itself.
+enum ReportSource {
+  USER
+  AUTOMATED
+}
+
+enum ModerationTargetType {
+  BLOG
+  COMMENT
+  USER
+  REPORT
+}
+
+/// The audit vocabulary. Adding an action is one entry here and one service
+/// method — the log's shape (actor, action, target, reason, metadata) is
+/// deliberately generic enough that no future action needs a schema change.
+enum ModerationActionType {
+  CONTENT_HIDDEN
+  CONTENT_RESTORED
+  CONTENT_DELETED
+  USER_SUSPENDED
+  USER_UNSUSPENDED
+  REPORT_CLAIMED
+  REPORT_RESOLVED
+  REPORT_DISMISSED
+}
+
+/// A flag raised against content or an account.
+///
+/// A report is a REQUEST for review, never a decision: nothing about a report
+/// changes what is visible on the platform. Only a ModerationAction does that.
+model Report {
+  id String @id @default(cuid())
+
+  /// Null for AUTOMATED reports, and for a reporter whose account was erased.
+  /// SetNull rather than Cascade: deleting the reporter must not delete the
+  /// moderation history of the thing they reported.
+  reporterId String?
+  reporter   User?        @relation("ReportReporter", fields: [reporterId], references: [id], onDelete: SetNull)
+  source     ReportSource @default(USER)
+
+  targetType ReportTargetType
+  targetId   String
+
+  /// The account that owns the reported thing (the blog's author, the comment's
+  /// author, or the reported user themselves), denormalized at report time.
+  ///
+  /// Present so the queue can group by offender and so a moderator can see
+  /// "this account has six open reports" without a join per row against three
+  /// different tables — the N+1 that a polymorphic target otherwise guarantees.
+  /// Not a foreign key, for the same reason `targetId` is not.
+  targetOwnerId String?
+
+  reason      ReportReason
+  description String?      @db.Text
+
+  status ReportStatus @default(PENDING)
+
+  /// Claiming: a moderator takes the report before acting on it. The claim is a
+  /// conditional UPDATE (see report.repository), so two moderators opening the
+  /// same queue row cannot both take it.
+  assignedToId String?
+  assignedTo   User?     @relation("ReportAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  assignedAt   DateTime?
+
+  resolvedById     String?
+  resolvedBy       User?     @relation("ReportResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+  resolvedAt       DateTime?
+  resolutionReason String?   @db.Text
+
+  /// Provider output for AUTOMATED reports (score, matched rules), and nothing
+  /// else. Never render inputs — the queue reads the target live.
+  metadata Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  actions ModerationAction[]
+  // NOTE: duplicate suppression is a PARTIAL UNIQUE index over OPEN reports
+  // only, which Prisma cannot express — see prisma/sql/moderation_indexes.sql,
+  // applied by `npm run db:indexes`.
+
+  /// The queue's own index: every queue page filters on status and walks
+  /// (createdAt, id). Trailing `id` makes the ordering total, which is what
+  /// makes the keyset cursor exact when two reports share a millisecond.
+  @@index([status, createdAt, id])
+  /// The unfiltered queue ("everything, newest first") and the date-range
+  /// filter, neither of which can use the status-leading index above.
+  @@index([createdAt, id])
+  /// "What else has been reported about this thing" — the report detail view,
+  /// and the duplicate check that runs on every submission.
+  @@index([targetType, targetId, status])
+  /// "This account's record" — reports about everything one user owns, newest
+  /// first. Ordered (owner, createdAt, id) rather than (owner, status, createdAt)
+  /// because the status filter is a two-value IN, not an equality: with status
+  /// in the middle the planner can seek on the owner but then has to SORT, while
+  /// this ordering walks the index and filters the handful of scoped rows on the
+  /// heap. Verified with `npm run moderation:report`.
+  @@index([targetOwnerId, createdAt, id])
+  /// A moderator's own claimed queue.
+  @@index([assignedToId, status, createdAt])
+  /// A reporter's own history, and the per-reporter abuse check.
+  @@index([reporterId, createdAt])
+}
+
+/// The append-only moderation audit log.
+///
+/// Every administrative action writes exactly one row here, in the same
+/// transaction as the change it records where the change is local, and
+/// immediately after where the change belongs to another module's service.
+/// UPDATE and DELETE are refused by a database trigger, so "append-only" is a
+/// property of the table rather than a convention the code is trusted to keep —
+/// see prisma/sql/moderation_indexes.sql.
+model ModerationAction {
+  id String @id @default(cuid())
+
+  /// The moderator who acted. Always from the authenticated request, never from
+  /// the body. Restrict (not Cascade/SetNull) so an audit row can never be
+  /// orphaned or erased by touching the actor's account — the platform
+  /// soft-deletes users, so this never blocks a real operation.
+  actorId String
+  actor   User   @relation("ModerationActor", fields: [actorId], references: [id], onDelete: Restrict)
+
+  action     ModerationActionType
+  targetType ModerationTargetType
+  targetId   String
+
+  /// The account affected — the content's author, or the suspended user.
+  /// Denormalized so "everything ever done to this user's account and content"
+  /// is one index scan rather than a fan-out over their blogs and comments.
+  subjectUserId String?
+
+  /// The report this action resolved, when it came from the queue. Null for a
+  /// direct action a moderator took without one.
+  reportId String?
+  report   Report? @relation(fields: [reportId], references: [id], onDelete: SetNull)
+
+  reason   String? @db.Text
+  /// Action-specific detail (previous status, blog slug, comment excerpt).
+  /// The extension point that lets a new action type record what it needs
+  /// without a migration.
+  metadata Json?
+
+  createdAt DateTime @default(now())
+  // No updatedAt, deliberately: a row that can be updated is not an audit log.
+
+  /// The global history feed, newest-first with a total order for the cursor.
+  @@index([createdAt, id])
+  /// "Everything done to this blog / comment / account."
+  @@index([targetType, targetId, createdAt])
+  /// "Everything this moderator did" — the review-the-reviewer query.
+  @@index([actorId, createdAt])
+  /// Filtered history ("all suspensions last week").
+  @@index([action, createdAt])
+  /// One user's full moderation record across all their content.
+  @@index([subjectUserId, createdAt])
 }

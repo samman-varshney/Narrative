@@ -19,6 +19,7 @@ export const commentSelect = {
   editedAt: true,
   deletedAt: true,
   isHidden: true,
+  hiddenAt: true,
   createdAt: true,
   updatedAt: true,
   author: { select: blogAuthorSelect },
@@ -123,13 +124,59 @@ export class CommentRepository {
     });
   }
 
-  /** Admin moderation — hide / unhide a comment (kept in the tree either way). */
-  setHidden(id: string, isHidden: boolean): Promise<CommentRow> {
-    return prisma.comment.update({
-      where: { id },
-      data: { isHidden },
-      select: commentSelect,
+  /**
+   * Moderation hide / unhide, as a CONDITIONAL update (kept in the tree either
+   * way — the tombstone keeps replies visible).
+   *
+   * Returns whether this call changed the row, so two moderators acting on the
+   * same queue entry produce one hide, one audit record and one notification
+   * rather than two of each. Same technique as `blogRepository.setModerationHidden`.
+   */
+  async setModerationHidden(id: string, hidden: boolean): Promise<boolean> {
+    const result = await prisma.comment.updateMany({
+      where: { id, isHidden: !hidden },
+      data: { isHidden: hidden, hiddenAt: hidden ? new Date() : null },
     });
+    return result.count === 1;
+  }
+
+  /**
+   * Moderation delete: soft-deletes unless already deleted. Conditional, as above.
+   *
+   * Sets `isHidden` alongside the tombstone, exactly as `blogRepository`
+   * .moderationDelete does and for the same two reasons: it is what stops the
+   * author mutating a removed comment, and the pair `deletedAt AND isHidden` is
+   * what marks the removal as MODERATION's rather than the author's — the only
+   * thing a later restore has to go on, since no column records who deleted it.
+   */
+  async moderationDelete(id: string): Promise<boolean> {
+    const result = await prisma.comment.updateMany({
+      where: { id, deletedAt: null },
+      data: { deletedAt: new Date(), isHidden: true, hiddenAt: new Date() },
+    });
+    return result.count === 1;
+  }
+
+  /**
+   * Moderation restore: lifts the hide, and — when `revive` is set — clears a
+   * moderation removal's tombstone in the same write.
+   *
+   * Conditional in both shapes, each naming the full state it expects, so a
+   * restore that races another moderator's action loses cleanly (0 rows) rather
+   * than clearing half of it. Mirrors `blogRepository.moderationRestore`.
+   */
+  async moderationRestore(id: string, opts: { revive: boolean }): Promise<boolean> {
+    const result = await prisma.comment.updateMany({
+      where: opts.revive
+        ? { id, isHidden: true, deletedAt: { not: null } }
+        : { id, isHidden: true, deletedAt: null },
+      data: {
+        isHidden: false,
+        hiddenAt: null,
+        ...(opts.revive && { deletedAt: null }),
+      },
+    });
+    return result.count === 1;
   }
 
   // ---- Reads ----

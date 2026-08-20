@@ -98,11 +98,19 @@ export const bookmarkWriteLimiter = rateLimit({
  * — so the global limiter would cut off ordinary browsing of the platform's
  * primary surface. `feedLimiter` replaces it with a budget sized for scrolling.
  *
+ * The administrative surface is here for a third reason, and an operational one
+ * rather than a UX one. Working a report takes about four requests (open the
+ * queue, open the report, claim it, act on it), so the global budget of 100 per
+ * 15 minutes runs out after roughly twenty-five reports — which is fine on a
+ * quiet day and precisely wrong during a spam wave, when the moderation team is
+ * the thing that must not stop. `adminLimiter` replaces it with a budget sized
+ * for a backlog, and every one of those endpoints is permission-gated anyway.
+ *
  * `originalUrl` rather than `path`: Express strips the mount prefix from
  * `req.url` inside a `app.use('/api', ...)` middleware, so `req.path` would read
  * `/v1/search/...` here and the check would be quietly mount-dependent.
  */
-export const SELF_LIMITED_PATH_PREFIXES = ['/api/v1/search', '/api/v1/feed'];
+export const SELF_LIMITED_PATH_PREFIXES = ['/api/v1/search', '/api/v1/feed', '/api/v1/admin'];
 
 export const hasDedicatedLimiter = (req: { originalUrl?: string }): boolean =>
   SELF_LIMITED_PATH_PREFIXES.some((prefix) => (req.originalUrl ?? '').startsWith(prefix));
@@ -206,5 +214,137 @@ export const analyticsIngestLimiter = rateLimit({
   store: new RedisStore({
     sendCommand: (...args: string[]) => redis.call(args[0], ...args.slice(1)) as any,
     prefix: 'rl:analytics:', // Distinct namespace for telemetry counters
+  }),
+});
+
+/**
+ * Dedicated limiter for filing reports.
+ *
+ * Reporting is the one write on the platform whose ABUSE is aimed at other
+ * users rather than at the server: a script filing hundreds of reports against
+ * one author buries the queue and, in a naive system, gets that author actioned
+ * by weight of numbers. The queue is not naive — reports are requests for review
+ * and never hide anything by themselves — but a flooded queue still costs
+ * moderators the time they would have spent on real abuse.
+ *
+ * 20 an hour is far above genuine use (reporting is a rare act; a normal reader
+ * files a handful a year) and far below what makes flooding worthwhile. The
+ * duplicate guards handle repeat reports of the SAME target; this bounds the
+ * total across different ones.
+ *
+ * An hour-long window rather than a minute, deliberately: a per-minute cap is
+ * trivially evaded by a script that sleeps, and the thing being bounded here is
+ * volume over a session, not burstiness.
+ */
+export const reportLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: {
+      code: 'TOO_MANY_REQUESTS',
+      message: 'Too many reports from this IP, please try again later',
+    },
+  },
+  skip: skipInTests,
+  store: new RedisStore({
+    sendCommand: (...args: string[]) => redis.call(args[0], ...args.slice(1)) as any,
+    prefix: 'rl:report:', // Distinct namespace for report counters
+  }),
+});
+
+/**
+ * Dedicated limiter for blog CREATION.
+ *
+ * Creation only — not updates or autosaves, which a single writing session
+ * fires constantly and which create nothing new. What this bounds is the
+ * spammer's actual mechanism: minting posts in bulk to seed links across the
+ * discovery surfaces.
+ *
+ * 20 an hour is more than any human writes and few enough that a link farm is
+ * not worth building here. Drafts are included: a draft is invisible, but it is
+ * one publish away from not being.
+ */
+export const blogCreateLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: {
+      code: 'TOO_MANY_REQUESTS',
+      message: 'Too many blogs created from this IP, please try again later',
+    },
+  },
+  skip: skipInTests,
+  store: new RedisStore({
+    sendCommand: (...args: string[]) => redis.call(args[0], ...args.slice(1)) as any,
+    prefix: 'rl:blog:', // Distinct namespace for blog-creation counters
+  }),
+});
+
+/**
+ * Dedicated limiter for profile mutations.
+ *
+ * The abuse it bounds is impersonation churn: renaming and re-avataring an
+ * account repeatedly to evade recognition, or cycling a display name through
+ * abusive strings that appear in everyone's notifications. Profile fields are
+ * denormalized into cached feed and search results too, so each change also
+ * invalidates work across the platform.
+ *
+ * 30 per 15 minutes leaves ordinary editing (and the fiddling that follows a
+ * new avatar) completely untouched.
+ */
+export const profileWriteLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: {
+      code: 'TOO_MANY_REQUESTS',
+      message: 'Too many profile updates from this IP, please slow down',
+    },
+  },
+  skip: skipInTests,
+  store: new RedisStore({
+    sendCommand: (...args: string[]) => redis.call(args[0], ...args.slice(1)) as any,
+    prefix: 'rl:profile:', // Distinct namespace for profile-write counters
+  }),
+});
+
+/**
+ * Dedicated limiter for the administrative surface.
+ *
+ * This is NOT an abuse control — every route behind it requires a permission,
+ * so an attacker without one is refused before doing any work. It is a backstop
+ * against a runaway admin client, and its budget is set by what a human
+ * moderator clearing a backlog actually needs.
+ *
+ * 600 per 15 minutes is roughly 150 reports handled in a quarter of an hour,
+ * which is faster than anyone reviews content and far more headroom than a
+ * shared office egress IP will use. See SELF_LIMITED_PATH_PREFIXES above for
+ * why the global limiter had to be replaced here rather than layered under.
+ */
+export const adminLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 600,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: {
+      code: 'TOO_MANY_REQUESTS',
+      message: 'Too many administrative requests from this IP, please slow down',
+    },
+  },
+  skip: skipInTests,
+  store: new RedisStore({
+    sendCommand: (...args: string[]) => redis.call(args[0], ...args.slice(1)) as any,
+    prefix: 'rl:admin:', // Distinct namespace for administrative counters
   }),
 });

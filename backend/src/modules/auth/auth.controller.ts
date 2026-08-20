@@ -28,9 +28,11 @@ export class AuthController {
   }
 
   async login(req: Request, res: Response) {
-    const { user, accessToken, refreshToken } = await authService.login(req.body, extractMetadata(req));
+    const { user, accessToken, refreshToken, reactivated } = await authService.login(req.body, extractMetadata(req));
     setRefreshTokenCookie(res, refreshToken);
-    sendSuccess(res, { user, accessToken }, 200, { message: 'Login successful' });
+    sendSuccess(res, { user, accessToken, reactivated }, 200, {
+      message: reactivated ? 'Welcome back — your account has been reactivated' : 'Login successful',
+    });
   }
 
   async logout(req: Request, res: Response) {

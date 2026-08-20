@@ -3,7 +3,8 @@ import { commentController } from './comment.controller';
 import {
   requireAuth,
   optionalAuth,
-  requireRole,
+  requireActiveAccount,
+  requirePermission,
 } from '../../core/middlewares/requireAuth';
 import { validateRequest } from '../../core/middlewares/validateRequest';
 import { commentWriteLimiter } from '../../core/middlewares/rateLimiter';
@@ -31,6 +32,7 @@ const blogCommentRouter = Router();
 blogCommentRouter.post(
   '/:blogId/comments',
   requireAuth,
+  requireActiveAccount,
   commentWriteLimiter,
   validateRequest(createCommentSchema),
   catchAsync(commentController.create)
@@ -51,20 +53,25 @@ commentRouter.get('/:id/replies', optionalAuth, catchAsync(commentController.lis
 commentRouter.post(
   '/:id/reply',
   requireAuth,
+  requireActiveAccount,
   commentWriteLimiter,
   validateRequest(replyCommentSchema),
   catchAsync(commentController.reply)
 );
+// Moderation actions are gated on a PERMISSION, not on the ADMIN role: a
+// moderator holds `content:restore`/`content:hide` too, and hardcoding the role
+// here would have meant editing this file to introduce one. The service repeats
+// the same check, so a route added without the middleware is still refused.
 commentRouter.post(
   '/:id/restore',
   requireAuth,
-  requireRole(['ADMIN']),
+  requirePermission(['content:restore']),
   catchAsync(commentController.restore)
 );
 commentRouter.post(
   '/:id/hide',
   requireAuth,
-  requireRole(['ADMIN']),
+  requirePermission(['content:hide']),
   catchAsync(commentController.hide)
 );
 
@@ -73,6 +80,7 @@ commentRouter.get('/:id', optionalAuth, catchAsync(commentController.getOne));
 commentRouter.patch(
   '/:id',
   requireAuth,
+  requireActiveAccount,
   validateRequest(updateCommentSchema),
   catchAsync(commentController.update)
 );

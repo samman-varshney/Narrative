@@ -50,7 +50,17 @@ export class UserController {
 
   async softDelete(req: Request, res: Response) {
     await userService.softDelete(req.user!.userId);
-    sendSuccess(res, null, 200, { message: 'Account deactivated successfully' });
+    // Says "deleted", because that is what it does. It previously reported a
+    // deactivation while writing DELETED — now that the two are genuinely
+    // different operations, the message has to name the right one.
+    sendSuccess(res, null, 200, { message: 'Account deleted successfully' });
+  }
+
+  async deactivate(req: Request, res: Response) {
+    await userService.deactivate(req.user!.userId);
+    sendSuccess(res, null, 200, {
+      message: 'Account deactivated. Log in again at any time to reactivate it.',
+    });
   }
 
   async getStats(req: Request, res: Response) {

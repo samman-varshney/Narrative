@@ -24,6 +24,7 @@ import { searchRoutes } from './modules/search/search.routes';
 import { analyticsRoutes } from './modules/analytics/analytics.routes';
 import { feedRoutes } from './modules/feed/feed.routes';
 import { dashboardRoutes } from './modules/dashboard/dashboard.routes';
+import { adminRoutes, reportRoutes } from './modules/moderation/moderation.routes';
 
 const app: Application = express();
 
@@ -100,6 +101,18 @@ app.use('/api/v1/feed', feedRoutes);
 // session rather than scrolled or typed into, so the standard budget fits it —
 // unlike /search and /feed, which had to be exempted.
 app.use('/api/v1/dashboard', dashboardRoutes);
+
+// Reporting is the Moderation module's user-facing surface: any authenticated
+// member can file a report. It owns its own mount and carries a dedicated
+// limiter (see `reportLimiter`), sitting UNDER the global one — reporting is a
+// rare act, so a stricter budget on top of the global backstop is exactly right.
+app.use('/api/v1/reports', reportRoutes);
+
+// The administrative surface. Owns its own mount, shares no prefix with another
+// router, and every route inside carries `requireAuth` + `requirePermission`.
+// It is NOT exempt from the global limiter: an admin console is clicked, not
+// scrolled, so the standard budget fits it.
+app.use('/api/v1/admin', adminRoutes);
 
 // Global Error Handler
 app.use(globalErrorHandler);

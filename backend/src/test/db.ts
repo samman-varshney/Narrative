@@ -50,8 +50,8 @@ export async function makeUser(overrides: Partial<{
   email: string;
   username: string;
   name: string;
-  status: 'ACTIVE' | 'SUSPENDED' | 'DELETED';
-  role: 'USER' | 'ADMIN';
+  status: 'ACTIVE' | 'DEACTIVATED' | 'SUSPENDED' | 'DELETED';
+  role: 'USER' | 'MODERATOR' | 'ADMIN';
 }> = {}) {
   const n = next();
   return prisma.user.create({
@@ -135,4 +135,112 @@ export async function makeBookmark(userId: string, blogId: string) {
 
 export async function makeFollow(followerId: string, followingId: string) {
   return prisma.follow.create({ data: { followerId, followingId } });
+}
+
+/** A comment on a blog. `path` mirrors what the repository writes for a root. */
+export async function makeComment(
+  blogId: string,
+  authorId: string,
+  overrides: Partial<{ content: string; parentId: string | null; isHidden: boolean }> = {}
+) {
+  const n = next();
+  const created = await prisma.comment.create({
+    data: {
+      blogId,
+      authorId,
+      content: overrides.content ?? `Comment ${n}`,
+      parentId: overrides.parentId ?? null,
+      depth: overrides.parentId ? 1 : 0,
+      isHidden: overrides.isHidden ?? false,
+      ...(overrides.isHidden && { hiddenAt: new Date() }),
+    },
+  });
+  return prisma.comment.update({
+    where: { id: created.id },
+    data: { path: created.id },
+  });
+}
+
+/**
+ * A report row, written directly.
+ *
+ * Bypasses the service on purpose: the suites that use this are testing the
+ * QUERIES over a populated table (pagination, filters, index usage), and going
+ * through the service would drag the Redis guard, the duplicate rules and the
+ * event bus into a test about SQL. Suites that exercise the filing rules go
+ * through `reportService` instead.
+ */
+export async function makeReport(
+  overrides: Partial<{
+    reporterId: string | null;
+    source: 'USER' | 'AUTOMATED';
+    targetType: 'BLOG' | 'COMMENT' | 'USER';
+    targetId: string;
+    targetOwnerId: string | null;
+    reason:
+      | 'SPAM'
+      | 'HARASSMENT'
+      | 'HATE_SPEECH'
+      | 'VIOLENCE'
+      | 'SEXUAL_CONTENT'
+      | 'MISINFORMATION'
+      | 'SELF_HARM'
+      | 'COPYRIGHT'
+      | 'IMPERSONATION'
+      | 'OTHER';
+    status: 'PENDING' | 'REVIEWING' | 'RESOLVED' | 'DISMISSED';
+    assignedToId: string | null;
+    createdAt: Date;
+  }> = {}
+) {
+  const n = next();
+  return prisma.report.create({
+    data: {
+      reporterId: overrides.reporterId ?? null,
+      source: overrides.source ?? 'USER',
+      targetType: overrides.targetType ?? 'BLOG',
+      targetId: overrides.targetId ?? `target-${n}`,
+      targetOwnerId: overrides.targetOwnerId ?? null,
+      reason: overrides.reason ?? 'SPAM',
+      status: overrides.status ?? 'PENDING',
+      assignedToId: overrides.assignedToId ?? null,
+      ...(overrides.createdAt && { createdAt: overrides.createdAt }),
+    },
+  });
+}
+
+/** An audit row, written directly. Same reasoning as `makeReport`. */
+export async function makeModerationAction(
+  actorId: string,
+  overrides: Partial<{
+    action:
+      | 'CONTENT_HIDDEN'
+      | 'CONTENT_RESTORED'
+      | 'CONTENT_DELETED'
+      | 'USER_SUSPENDED'
+      | 'USER_UNSUSPENDED'
+      | 'REPORT_CLAIMED'
+      | 'REPORT_RESOLVED'
+      | 'REPORT_DISMISSED';
+    targetType: 'BLOG' | 'COMMENT' | 'USER' | 'REPORT';
+    targetId: string;
+    subjectUserId: string | null;
+    reportId: string | null;
+    reason: string | null;
+    createdAt: Date;
+  }> = {}
+) {
+  const n = next();
+  return prisma.moderationAction.create({
+    data: {
+      actorId,
+      action: overrides.action ?? 'CONTENT_HIDDEN',
+      targetType: overrides.targetType ?? 'BLOG',
+      targetId: overrides.targetId ?? `target-${n}`,
+      subjectUserId: overrides.subjectUserId ?? null,
+      reportId: overrides.reportId ?? null,
+      reason: overrides.reason ?? null,
+      ...(overrides.createdAt && { createdAt: overrides.createdAt }),
+    },
+  });
 }

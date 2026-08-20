@@ -66,15 +66,24 @@ export const FEED_VISIBILITY: FeedVisibilitySet = ['PUBLIC'];
  *
  *   status = PUBLISHED       drafts, archived and soft-deleted posts
  *   visibility = PUBLIC      private, unlisted and members-only posts
+ *   isHidden = false         posts a moderator has withheld. A separate axis
+ *                            from `status` on purpose: status is the author's
+ *                            lifecycle and they can move it freely, so a
+ *                            moderation decision encoded there would be undone
+ *                            by an ordinary republish. See BLOG schema notes.
  *   publishedAt IS NOT NULL  a published row with no publication instant cannot
  *                            be ordered deterministically, so it cannot be paged
  *                            without risking duplicates — excluded rather than
  *                            sorted arbitrarily
- *   author status ACTIVE     posts by suspended or deleted accounts
+ *   author status ACTIVE     posts by suspended or deleted accounts. This is
+ *                            what makes a suspension take a whole account's
+ *                            output out of discovery without touching a single
+ *                            blog row.
  */
 export const FEED_ELIGIBILITY: Prisma.Sql = Prisma.raw(
   `b."status" = '${DISCOVERABLE_STATUS}'
      AND b."visibility" IN (${FEED_VISIBILITY.map((v) => `'${v}'`).join(', ')})
+     AND b."isHidden" = false
      AND b."publishedAt" IS NOT NULL
      AND u."status" = 'ACTIVE'`
 );
@@ -89,12 +98,14 @@ export const FEED_ELIGIBILITY: Prisma.Sql = Prisma.raw(
 export function isFeedEligible(blog: {
   status: BlogStatus;
   visibility: BlogVisibility;
+  isHidden: boolean;
   publishedAt: Date | null;
   author: { status: string };
 }): boolean {
   return (
     blog.status === DISCOVERABLE_STATUS &&
     FEED_VISIBILITY.includes(blog.visibility) &&
+    !blog.isHidden &&
     blog.publishedAt !== null &&
     blog.author.status === 'ACTIVE'
   );

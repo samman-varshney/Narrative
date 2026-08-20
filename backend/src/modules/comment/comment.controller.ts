@@ -60,17 +60,36 @@ export class CommentController {
 
   // ---- Moderation (admin) ----
 
-  /** POST /comments/:id/restore — un-delete (admin). */
+  /**
+   * POST /comments/:id/restore — un-delete (requires `content:restore`).
+   *
+   * The actor is built from the token, never from the body. Every moderation
+   * entry point on the platform follows that rule; it is what makes an
+   * administrative action impossible to attribute to someone else.
+   */
   async restore(req: Request, res: Response) {
     const { id } = parseOrThrow(idParamSchema, req.params);
-    const comment = await commentService.restore(id, req.user!.role);
+    const comment = await commentService.restore(id, {
+      userId: req.user!.userId,
+      role: req.user!.role,
+    });
     sendSuccess(res, { comment }, 200, { message: 'Comment restored' });
   }
 
-  /** POST /comments/:id/hide — hide from public view (admin). */
+  /**
+   * POST /comments/:id/hide — hide from public view (requires `content:hide`).
+   *
+   * Kept as a thin alias over the moderation seam rather than a second
+   * implementation: the audited, report-aware path is
+   * `POST /api/v1/admin/moderation/comments/:id/hide`. This one exists because
+   * it already did, and now shares the same service method.
+   */
   async hide(req: Request, res: Response) {
     const { id } = parseOrThrow(idParamSchema, req.params);
-    const comment = await commentService.hide(id, req.user!.role);
+    const comment = await commentService.hideForModeration(id, {
+      userId: req.user!.userId,
+      role: req.user!.role,
+    });
     sendSuccess(res, { comment }, 200, { message: 'Comment hidden' });
   }
 

@@ -1,5 +1,6 @@
 import request from 'supertest';
 import app from '../../../app';
+import { allowActiveAccounts } from '../../../test/auth';
 import { commentService } from '../comment.service';
 import { tokensService } from '../../auth/tokens.service';
 import { AppError } from '../../../core/exceptions/AppError';
@@ -18,7 +19,14 @@ const mocked = commentService as jest.Mocked<typeof commentService>;
 const COMMENT = { id: 'c1', content: 'hi', blogId: 'blog-1', parentId: null, depth: 0 };
 const PAGE = { items: [COMMENT], nextCursor: null, hasNextPage: false, totalCount: 1 };
 
-beforeEach(() => jest.clearAllMocks());
+beforeEach(() => {
+  jest.clearAllMocks();
+  // Comment writes sit behind `requireActiveAccount`, which looks the caller's
+  // account up. These tests mint tokens for users that do not exist in the
+  // database, so the guard is stubbed to "active" — suspension enforcement has
+  // its own suite (moderation.suspension.db.test.ts).
+  allowActiveAccounts();
+});
 
 describe('POST /api/v1/blogs/:blogId/comments', () => {
   it('401 without a token', async () => {
@@ -137,17 +145,24 @@ describe('moderation (admin only)', () => {
     mocked.restore.mockResolvedValue(COMMENT as any);
     const res = await request(app).post('/api/v1/comments/c1/restore').set('Authorization', adminHeader);
     expect(res.status).toBe(200);
-    expect(mocked.restore).toHaveBeenCalledWith('c1', 'ADMIN');
+    expect(mocked.restore).toHaveBeenCalledWith('c1', {
+      userId: expect.any(String),
+      role: 'ADMIN',
+    });
   });
 
-  it('hide requires admin', async () => {
+  it('hide requires the content:hide permission', async () => {
     const denied = await request(app).post('/api/v1/comments/c1/hide').set('Authorization', authHeader);
     expect(denied.status).toBe(403);
 
-    mocked.hide.mockResolvedValue(COMMENT as any);
+    mocked.hideForModeration.mockResolvedValue(COMMENT as any);
     const ok = await request(app).post('/api/v1/comments/c1/hide').set('Authorization', adminHeader);
     expect(ok.status).toBe(200);
-    expect(mocked.hide).toHaveBeenCalledWith('c1', 'ADMIN');
+    // The actor comes from the token, never from the request body.
+    expect(mocked.hideForModeration).toHaveBeenCalledWith('c1', {
+      userId: expect.any(String),
+      role: 'ADMIN',
+    });
   });
 });
 

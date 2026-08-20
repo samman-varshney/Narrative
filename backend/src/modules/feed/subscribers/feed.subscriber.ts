@@ -33,14 +33,18 @@ import { feedService } from '../feed.service';
  * cached BLOG pages stale, not just user-shaped ones. A deleted account is
  * stronger still — every one of their posts must leave every feed.
  *
- * Suspension has NO subscription here, deliberately: the platform has no
- * suspension path to subscribe to. `SUSPENDED` is only ever read — auth refuses
- * a login with it — and nothing writes it, so there is no event to listen for.
- * Eligibility still enforces it, because `u."status" = 'ACTIVE'` sits in the
- * query predicate itself: a suspended author leaves every feed as soon as the
- * cached page expires, without any invalidation at all. When moderation lands,
- * the event it emits belongs to the User module and is simply added to the list
- * below — it must not be invented here to give Feed something to subscribe to.
+ * Moderation events are the newest members of that list, and they arrived
+ * exactly as this comment predicted they would: `USER_SUSPENDED` is emitted by
+ * the User module (which owns account status) and `CONTENT_MODERATED` by the
+ * module that owns the content, so Feed subscribes to a fact and still has no
+ * dependency on the Moderation module.
+ *
+ * They matter because eligibility alone is not enough. `u."status" = 'ACTIVE'`
+ * and `b."isHidden" = false` sit in the query predicate, so a suspended author
+ * or a hidden post leaves every feed on the next uncached read — but a cached
+ * page written a moment earlier would go on serving it for the rest of its TTL.
+ * For an ordinary staleness that is fine; for content a moderator just removed
+ * it is not, which is the whole reason these three lines exist.
  *
  * Follow events are the only PRECISE invalidation here: we know exactly whose
  * feed changed, so one key is dropped rather than a generation bumped. Without
@@ -72,6 +76,20 @@ const USER_EVENTS = [
   EVENTS.USER_PROFILE_UPDATED,
   EVENTS.USER_AVATAR_UPDATED,
   EVENTS.USER_DELETED, // a deleted account's posts must leave every feed
+  EVENTS.USER_SUSPENDED, // ...and so must a suspended one's, immediately
+  EVENTS.USER_UNSUSPENDED, // reinstated: their posts become discoverable again
+  EVENTS.USER_DEACTIVATED, // self-service exit — same predicate, same staleness
+  EVENTS.USER_REACTIVATED, // ...and back on the next login
+] as const;
+
+/**
+ * Moderation outcomes: content enters or leaves the discoverable set the moment
+ * a moderator acts, so the cached pages that still carry it must go now rather
+ * than at TTL.
+ */
+const MODERATION_EVENTS = [
+  EVENTS.CONTENT_MODERATED,
+  EVENTS.CONTENT_RESTORED,
 ] as const;
 
 let registered = false;
@@ -91,7 +109,7 @@ export function registerFeedSubscribers(): void {
   if (registered) return;
   registered = true;
 
-  for (const event of [...BLOG_EVENTS, ...USER_EVENTS]) {
+  for (const event of [...BLOG_EVENTS, ...USER_EVENTS, ...MODERATION_EVENTS]) {
     eventBus.on(event, () => invalidateShared(event));
   }
 

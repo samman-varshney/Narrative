@@ -3,8 +3,10 @@ import { blogController } from './blog.controller';
 import {
   requireAuth,
   optionalAuth,
+  requireActiveAccount,
   requireRole,
 } from '../../core/middlewares/requireAuth';
+import { blogCreateLimiter } from '../../core/middlewares/rateLimiter';
 import { validateRequest } from '../../core/middlewares/validateRequest';
 import { upload } from '../../core/middlewares/upload';
 import { catchAsync } from '../../core/utils/asyncHandler';
@@ -26,7 +28,20 @@ import {
 const router = Router();
 
 // --- Create ---
-router.post('/', requireAuth, validateRequest(createBlogSchema), catchAsync(blogController.create));
+// `requireActiveAccount` gates the WRITES on this router (create, edit,
+// publish, cover) and nothing else: a suspended account may still read the
+// platform and see its own posts — what it may not do is add to them. The
+// limiter bounds bulk creation, which is the spammer's actual mechanism; edits
+// and autosaves are left alone because a single writing session fires them
+// constantly and creates nothing new.
+router.post(
+  '/',
+  requireAuth,
+  requireActiveAccount,
+  blogCreateLimiter,
+  validateRequest(createBlogSchema),
+  catchAsync(blogController.create)
+);
 
 // --- Authenticated collections (literal segments — before /:slug) ---
 router.get('/me', requireAuth, catchAsync(blogController.myBlogs));
@@ -50,15 +65,15 @@ router.get('/tags', optionalAuth, catchAsync(blogController.searchTags));
 
 // --- Id-scoped actions (two-segment; never collide with /:slug) ---
 router.get('/:id/preview', requireAuth, catchAsync(blogController.preview));
-router.patch('/:id/autosave', requireAuth, validateRequest(autosaveSchema), catchAsync(blogController.autosave));
-router.patch('/:id/cover', requireAuth, upload.single('file'), catchAsync(blogController.updateCover));
-router.post('/:id/publish', requireAuth, catchAsync(blogController.publish));
-router.post('/:id/unpublish', requireAuth, catchAsync(blogController.unpublish));
-router.post('/:id/archive', requireAuth, catchAsync(blogController.archive));
-router.post('/:id/restore', requireAuth, catchAsync(blogController.restore));
+router.patch('/:id/autosave', requireAuth, requireActiveAccount, validateRequest(autosaveSchema), catchAsync(blogController.autosave));
+router.patch('/:id/cover', requireAuth, requireActiveAccount, upload.single('file'), catchAsync(blogController.updateCover));
+router.post('/:id/publish', requireAuth, requireActiveAccount, catchAsync(blogController.publish));
+router.post('/:id/unpublish', requireAuth, requireActiveAccount, catchAsync(blogController.unpublish));
+router.post('/:id/archive', requireAuth, requireActiveAccount, catchAsync(blogController.archive));
+router.post('/:id/restore', requireAuth, requireActiveAccount, catchAsync(blogController.restore));
 
 // --- Id-scoped mutations ---
-router.patch('/:id', requireAuth, validateRequest(updateBlogSchema), catchAsync(blogController.update));
+router.patch('/:id', requireAuth, requireActiveAccount, validateRequest(updateBlogSchema), catchAsync(blogController.update));
 router.delete('/:id', requireAuth, catchAsync(blogController.remove));
 
 // --- Public read by slug (MUST be last) ---

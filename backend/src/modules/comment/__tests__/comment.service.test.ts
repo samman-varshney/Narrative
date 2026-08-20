@@ -200,28 +200,135 @@ describe('softDelete / restore / hide', () => {
     ).rejects.toMatchObject({ statusCode: 403 });
   });
 
-  it('restore is admin-only', async () => {
+  it('restore requires content:restore', async () => {
     repo.findById.mockResolvedValue(makeRow({ deletedAt: new Date() }));
     repo.restore.mockResolvedValue(makeRow());
-    await expect(commentService.restore('c1', USER_ROLE)).rejects.toMatchObject({
-      statusCode: 403,
-    });
+    await expect(
+      commentService.restore('c1', { userId: 'u9', role: USER_ROLE })
+    ).rejects.toMatchObject({ statusCode: 403 });
 
-    await commentService.restore('c1', ADMIN_ROLE);
+    await commentService.restore('c1', { userId: 'admin', role: ADMIN_ROLE });
     expect(repo.restore).toHaveBeenCalledWith('c1');
     expect(bus.emit).toHaveBeenCalledWith(EVENTS.COMMENT_RESTORED, expect.any(Object));
   });
 
-  it('hide is admin-only and tombstones the content', async () => {
+  it('hideForModeration requires content:hide and emits CONTENT_MODERATED', async () => {
     repo.findById.mockResolvedValue(makeRow());
-    repo.setHidden.mockResolvedValue(makeRow({ isHidden: true }));
-    await expect(commentService.hide('c1', USER_ROLE)).rejects.toMatchObject({
-      statusCode: 403,
+    repo.setModerationHidden.mockResolvedValue(true);
+
+    await expect(
+      commentService.hideForModeration('c1', { userId: 'u9', role: USER_ROLE })
+    ).rejects.toMatchObject({ statusCode: 403 });
+
+    const snapshot = await commentService.hideForModeration('c1', {
+      userId: 'mod',
+      role: 'MODERATOR',
     });
 
-    const dto = await commentService.hide('c1', ADMIN_ROLE);
-    expect(dto.content).toBe('This comment has been hidden by a moderator.');
-    expect(bus.emit).toHaveBeenCalledWith(EVENTS.COMMENT_HIDDEN, expect.any(Object));
+    // The moderator sees the RAW text, not the reader's tombstone placeholder.
+    expect(snapshot?.content).toBe('hello');
+    expect(bus.emit).toHaveBeenCalledWith(
+      EVENTS.CONTENT_MODERATED,
+      expect.objectContaining({
+        targetType: 'COMMENT',
+        targetId: 'c1',
+        actorId: 'mod',
+        action: 'HIDDEN',
+      })
+    );
+  });
+
+  it('hideForModeration reports a conflict when another moderator got there first', async () => {
+    repo.findById.mockResolvedValue(makeRow());
+    repo.setModerationHidden.mockResolvedValue(false);
+
+    await expect(
+      commentService.hideForModeration('c1', { userId: 'mod', role: 'MODERATOR' })
+    ).rejects.toMatchObject({ statusCode: 409, errorCode: 'ALREADY_HIDDEN' });
+    expect(bus.emit).not.toHaveBeenCalledWith(EVENTS.CONTENT_MODERATED, expect.anything());
+  });
+
+  it('deleteForModeration is administrator-only', async () => {
+    repo.findById.mockResolvedValue(makeRow());
+    repo.moderationDelete.mockResolvedValue(true);
+
+    await expect(
+      commentService.deleteForModeration('c1', { userId: 'mod', role: 'MODERATOR' })
+    ).rejects.toMatchObject({ statusCode: 403 });
+
+    await commentService.deleteForModeration('c1', { userId: 'admin', role: 'ADMIN' });
+    expect(repo.moderationDelete).toHaveBeenCalledWith('c1');
+  });
+
+  it('a hidden comment cannot be deleted by its author either', async () => {
+    repo.findById.mockResolvedValue(makeRow({ isHidden: true }));
+
+    // Same reason edits are refused: the state a moderator acted on must not
+    // move underneath the decision. It is also what keeps "tombstoned AND
+    // hidden" meaning exactly one thing \u2014 moderation removed this.
+    await expect(
+      commentService.softDelete('c1', AUTHOR, USER_ROLE)
+    ).rejects.toMatchObject({ statusCode: 409, errorCode: 'CONTENT_MODERATED' });
+    expect(repo.softDelete).not.toHaveBeenCalled();
+  });
+
+  it('the cheap restore cannot be used to undo a removal', async () => {
+    repo.findById.mockResolvedValue(makeRow({ deletedAt: new Date(), isHidden: true }));
+
+    // `restore` costs content:restore; reviving a removal costs content:delete.
+    // Without this guard an administrator-only action would be undoable through
+    // the endpoint next door, and with no audit record.
+    await expect(
+      commentService.restore('c1', { userId: 'mod', role: 'MODERATOR' })
+    ).rejects.toMatchObject({ statusCode: 409, errorCode: 'CONTENT_MODERATED' });
+    expect(repo.restore).not.toHaveBeenCalled();
+  });
+
+  it('restoreFromModeration lifts a plain hide for a moderator', async () => {
+    repo.findById.mockResolvedValue(makeRow({ isHidden: true }));
+    repo.moderationRestore.mockResolvedValue(true);
+
+    await commentService.restoreFromModeration('c1', { userId: 'mod', role: 'MODERATOR' });
+
+    expect(repo.moderationRestore).toHaveBeenCalledWith('c1', { revive: false });
+    expect(bus.emit).toHaveBeenCalledWith(
+      EVENTS.CONTENT_RESTORED,
+      expect.objectContaining({ targetType: 'COMMENT', targetId: 'c1', actorId: 'mod' })
+    );
+  });
+
+  it('refuses a moderator the revival of a removal, and allows an administrator', async () => {
+    repo.findById.mockResolvedValue(makeRow({ deletedAt: new Date(), isHidden: true }));
+    repo.moderationRestore.mockResolvedValue(true);
+
+    await expect(
+      commentService.restoreFromModeration('c1', { userId: 'mod', role: 'MODERATOR' })
+    ).rejects.toMatchObject({ statusCode: 403 });
+    expect(repo.moderationRestore).not.toHaveBeenCalled();
+
+    await commentService.restoreFromModeration('c1', { userId: 'admin', role: ADMIN_ROLE });
+    expect(repo.moderationRestore).toHaveBeenCalledWith('c1', { revive: true });
+  });
+
+  it('will not resurrect a comment its author deleted', async () => {
+    repo.findById.mockResolvedValue(makeRow({ deletedAt: new Date(), isHidden: false }));
+
+    await expect(
+      commentService.restoreFromModeration('c1', { userId: 'admin', role: ADMIN_ROLE })
+    ).rejects.toMatchObject({ statusCode: 409, errorCode: 'NOT_HIDDEN' });
+    expect(repo.moderationRestore).not.toHaveBeenCalled();
+  });
+
+  it('a hidden comment cannot be edited, by its author or by an admin', async () => {
+    repo.findById.mockResolvedValue(makeRow({ isHidden: true }));
+
+    await expect(
+      commentService.edit('c1', AUTHOR, USER_ROLE, { content: 'rewritten' })
+    ).rejects.toMatchObject({ statusCode: 409, errorCode: 'CONTENT_MODERATED' });
+
+    await expect(
+      commentService.edit('c1', 'admin', ADMIN_ROLE, { content: 'rewritten' })
+    ).rejects.toMatchObject({ statusCode: 409, errorCode: 'CONTENT_MODERATED' });
   });
 });
 

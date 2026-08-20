@@ -55,6 +55,30 @@ const USER_EVENTS = [
   EVENTS.USER_AVATAR_UPDATED,
   EVENTS.USER_SETTINGS_UPDATED, // carries the isPrivate visibility toggle
   EVENTS.USER_DELETED,
+  // Suspension takes an account AND everything it wrote out of results: the
+  // engine's queries already gate on `u."status" = 'ACTIVE'`, but a warm cache
+  // entry would go on serving them until it expired.
+  EVENTS.USER_SUSPENDED,
+  EVENTS.USER_UNSUSPENDED,
+  // Self-deactivation hides an account for exactly the same reason and through
+  // exactly the same predicate, so it needs exactly the same invalidation.
+  EVENTS.USER_DEACTIVATED,
+  EVENTS.USER_REACTIVATED,
+] as const;
+
+/**
+ * Moderation outcomes on content. Emitted by Blog and Comment, never by the
+ * Moderation module — Search subscribes to a fact and stays a leaf in the
+ * dependency graph, exactly as it does for every other event here.
+ *
+ * Only BLOG targets matter: comments are not searchable, so a comment hide
+ * invalidates nothing. Filtered on the payload rather than by subscribing to a
+ * blog-specific event, because splitting one fact into two events to suit one
+ * consumer is how an event catalogue rots.
+ */
+const MODERATION_EVENTS = [
+  EVENTS.CONTENT_MODERATED,
+  EVENTS.CONTENT_RESTORED,
 ] as const;
 
 /** Scopes invalidated by a blog change. */
@@ -91,6 +115,12 @@ export function registerSearchSubscribers(): void {
   }
   for (const event of USER_EVENTS) {
     eventBus.on(event, () => invalidate(USER_SCOPES, event));
+  }
+  for (const event of MODERATION_EVENTS) {
+    eventBus.on(event, (payload: { targetType?: string }) => {
+      if (payload?.targetType !== 'BLOG') return;
+      return invalidate(BLOG_SCOPES, event);
+    });
   }
   eventBus.on(EVENTS.CATEGORY_CREATED, () =>
     invalidate(CATEGORY_SCOPES, EVENTS.CATEGORY_CREATED)

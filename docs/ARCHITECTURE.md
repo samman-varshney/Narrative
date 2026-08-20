@@ -35,7 +35,7 @@ src/
 │   ├── search/
 │   ├── feed/
 │   ├── dashboard/
-│   └── admin/
+│   └── moderation/       # reports, moderation actions, the audit log
 ├── app.ts                 # Express app setup and middleware wiring
 └── server.ts              # Entry point and server initialization
 ```
@@ -65,7 +65,7 @@ src/
 ## 4. Module Responsibilities
 
 * **Authentication:** Handles registration, login, JWT issuance/validation, password resets, and session management.
-* **User:** Manages user profiles, avatars, bios, and account deletion.
+* **User:** Manages user profiles, avatars, bios, and the account lifecycle. It is the single owner of `User.status`: self-service deactivation and deletion are written here, and Moderation suspends by calling into this module rather than by writing the column itself. See [USER_MODULE.md](./USER_MODULE.md#account-deactivation).
 * **Blog:** Core content module. Manages drafts, publishing, formatting, categories, and tags.
 * **Comment:** Manages hierarchical comments (nested/replies) on blogs.
 * **Follow:** Manages the graph of followers and followings.
@@ -76,7 +76,7 @@ src/
 * **Feed & Explore:** The content-discovery surface — Following, Latest, Explore and Trending. A pure composition module: it owns discovery eligibility, ranking, diversity, feed pagination and feed caching, and composes Blog, Follow, Analytics, Comment and Bookmark for everything else. See [FEED_MODULE.md](./FEED_MODULE.md).
 * **Dashboard:** The authenticated author's personal overview — content, audience, engagement, top-performing posts, drafts and recent activity. Like Feed, a pure composition module, and deliberately the strictest example of one: it contains **no repository and no SQL**, owning only its API contract, section composition, range vocabulary, chart gap-filling and its own cache. Every fact it serves is produced by Analytics, Blog, Follow, Bookmark, Comment or Notification. See [DASHBOARD_MODULE.md](./DASHBOARD_MODULE.md).
 * **Media:** Handles parsing, validating, and uploading files via `IStorageProvider`.
-* **Admin:** Platform moderation, category management, and user bans.
+* **Moderation & Administration:** Content reports, the moderation queue, administrative actions and the append-only audit log. Owns reports and the audit log only — every action it takes is performed by the module that owns the data (Blog hides a blog, User suspends an account), so there is one definition of "hidden" and "suspended" on the platform. See [MODERATION_MODULE.md](./MODERATION_MODULE.md).
 
 ## 5. Dependency Rules
 

@@ -19,19 +19,59 @@ const SQL_DIR = path.resolve(__dirname, '../prisma/sql');
  * Necessary because the driver sends each `$executeRawUnsafe` through the
  * extended query protocol, which permits exactly ONE command per message — a
  * multi-statement file fails with "cannot insert multiple commands into a
- * prepared statement". Splitting is safe here because these files contain only
- * DDL: no functions, no dollar-quoted bodies, and no semicolons inside string
- * literals. Line comments are stripped first so a `;` inside one cannot split a
- * statement in half.
+ * prepared statement".
+ *
+ * Line comments are stripped first so a `;` inside one cannot split a statement
+ * in half, and DOLLAR-QUOTED bodies are tracked so the semicolons inside a
+ * `CREATE FUNCTION ... $$ ... $$` body do not either. The moderation audit log's
+ * append-only trigger is the first file here to need that; before it, every
+ * statement in this directory was a bare `CREATE INDEX`.
+ *
+ * Still not a SQL parser: semicolons inside ordinary string literals would
+ * split wrongly. No file here has one, and the alternative — a real parser, or
+ * shelling out to psql — is a lot of machinery for a directory of DDL.
  */
 function splitStatements(sql: string): string[] {
-  return sql
+  const source = sql
     .split('\n')
     .map((line) => (line.trimStart().startsWith('--') ? '' : line))
-    .join('\n')
-    .split(';')
-    .map((s) => s.trim())
-    .filter(Boolean);
+    .join('\n');
+
+  // Sticky so it can be tested at a position without slicing the string.
+  const dollarQuote = /\$[A-Za-z_]*\$/y;
+
+  const statements: string[] = [];
+  let current = '';
+  let openTag: string | null = null;
+
+  for (let i = 0; i < source.length; i++) {
+    if (openTag) {
+      if (source.startsWith(openTag, i)) {
+        current += openTag;
+        i += openTag.length - 1;
+        openTag = null;
+        continue;
+      }
+    } else {
+      dollarQuote.lastIndex = i;
+      const opened = dollarQuote.exec(source);
+      if (opened) {
+        openTag = opened[0];
+        current += openTag;
+        i += openTag.length - 1;
+        continue;
+      }
+      if (source[i] === ';') {
+        statements.push(current.trim());
+        current = '';
+        continue;
+      }
+    }
+    current += source[i];
+  }
+
+  statements.push(current.trim());
+  return statements.filter(Boolean);
 }
 
 async function main() {

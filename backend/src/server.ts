@@ -15,6 +15,8 @@ import { registerSearchSubscribers } from './modules/search/subscribers';
 import { registerAnalyticsSubscribers } from './modules/analytics/subscribers';
 import { registerFeedSubscribers } from './modules/feed/subscribers';
 import { registerDashboardSubscribers } from './modules/dashboard/subscribers';
+import { registerModerationSubscribers } from './modules/moderation/subscribers';
+import { registerAuthSubscribers } from './modules/auth/subscribers';
 import { startAnalyticsWorker } from './modules/analytics/analytics.worker';
 import { registerAnalyticsSchedules } from './modules/analytics/analytics.scheduler';
 import { startDomainEventsWorker } from './core/events/domainEvents.worker';
@@ -28,6 +30,12 @@ registerSearchSubscribers();
 registerAnalyticsSubscribers();
 registerFeedSubscribers();
 registerDashboardSubscribers();
+// Auth's subscriber enforces suspension on already-issued tokens (it revokes
+// sessions and primes the account-status cache); Moderation's evaluates new
+// content and files automated reports. Both are registered here, before the
+// dispatcher starts, for the same reason as every registration above.
+registerAuthSubscribers();
+registerModerationSubscribers();
 startDomainEventsWorker();
 
 // The analytics consumer, then its schedules. Order matters only in that the

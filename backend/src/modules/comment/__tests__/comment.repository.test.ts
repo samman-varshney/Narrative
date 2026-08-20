@@ -4,6 +4,7 @@ jest.mock('../../../core/database/prisma', () => ({
     comment: {
       create: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
       findUnique: jest.fn(),
       findMany: jest.fn(),
       count: jest.fn(),
@@ -94,12 +95,40 @@ describe('write helpers set the right fields', () => {
     expect(db.comment.update.mock.calls[1][0].data).toEqual({ deletedAt: null });
   });
 
-  it('setHidden toggles isHidden', async () => {
-    db.comment.update.mockResolvedValue({});
-    await commentRepository.setHidden('c1', true);
-    expect(db.comment.update).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: 'c1' }, data: { isHidden: true } })
-    );
+  it('setModerationHidden updates conditionally and stamps hiddenAt', async () => {
+    db.comment.updateMany.mockResolvedValue({ count: 1 });
+    const changed = await commentRepository.setModerationHidden('c1', true);
+
+    expect(changed).toBe(true);
+    const call = db.comment.updateMany.mock.calls[0][0];
+    // The `isHidden: !hidden` condition is the concurrency guard: the second
+    // moderator's UPDATE matches no row and reports no change.
+    expect(call.where).toEqual({ id: 'c1', isHidden: false });
+    expect(call.data.isHidden).toBe(true);
+    expect(call.data.hiddenAt).toBeInstanceOf(Date);
+  });
+
+  it('setModerationHidden reports no change when the row already matches', async () => {
+    db.comment.updateMany.mockResolvedValue({ count: 0 });
+    await expect(commentRepository.setModerationHidden('c1', true)).resolves.toBe(false);
+  });
+
+  it('setModerationHidden clears hiddenAt when unhiding', async () => {
+    db.comment.updateMany.mockResolvedValue({ count: 1 });
+    await commentRepository.setModerationHidden('c1', false);
+
+    const call = db.comment.updateMany.mock.calls[0][0];
+    expect(call.where).toEqual({ id: 'c1', isHidden: true });
+    expect(call.data).toEqual({ isHidden: false, hiddenAt: null });
+  });
+
+  it('moderationDelete soft-deletes only a comment that is not already deleted', async () => {
+    db.comment.updateMany.mockResolvedValue({ count: 1 });
+    await commentRepository.moderationDelete('c1');
+
+    const call = db.comment.updateMany.mock.calls[0][0];
+    expect(call.where).toEqual({ id: 'c1', deletedAt: null });
+    expect(call.data.deletedAt).toBeInstanceOf(Date);
   });
 });
 
@@ -161,5 +190,48 @@ describe('reads', () => {
     const map = await commentRepository.countRepliesFor([]);
     expect(map.size).toBe(0);
     expect(db.comment.groupBy).not.toHaveBeenCalled();
+  });
+});
+
+describe('moderation writers', () => {
+  it('moderationDelete hides the comment as well as tombstoning it', async () => {
+    db.comment.updateMany.mockResolvedValue({ count: 1 });
+
+    await expect(commentRepository.moderationDelete('c1')).resolves.toBe(true);
+
+    const [call] = db.comment.updateMany.mock.calls;
+    expect(call[0].where).toEqual({ id: 'c1', deletedAt: null });
+    // `deletedAt AND isHidden` is the marker for "moderation removed this" —
+    // the only signal a later restore has, since nothing records who deleted it.
+    expect(call[0].data).toMatchObject({
+      deletedAt: expect.any(Date),
+      isHidden: true,
+      hiddenAt: expect.any(Date),
+    });
+  });
+
+  it('moderationRestore lifts a hide without clearing a tombstone', async () => {
+    db.comment.updateMany.mockResolvedValue({ count: 1 });
+
+    await commentRepository.moderationRestore('c1', { revive: false });
+
+    const [call] = db.comment.updateMany.mock.calls;
+    expect(call[0].where).toEqual({ id: 'c1', isHidden: true, deletedAt: null });
+    expect(call[0].data).toEqual({ isHidden: false, hiddenAt: null });
+  });
+
+  it('moderationRestore revives a removal, clearing both', async () => {
+    db.comment.updateMany.mockResolvedValue({ count: 1 });
+
+    await commentRepository.moderationRestore('c1', { revive: true });
+
+    const [call] = db.comment.updateMany.mock.calls;
+    expect(call[0].where).toEqual({ id: 'c1', isHidden: true, deletedAt: { not: null } });
+    expect(call[0].data).toEqual({ isHidden: false, hiddenAt: null, deletedAt: null });
+  });
+
+  it('reports a lost race rather than claiming the write', async () => {
+    db.comment.updateMany.mockResolvedValue({ count: 0 });
+    await expect(commentRepository.moderationRestore('c1', { revive: true })).resolves.toBe(false);
   });
 });

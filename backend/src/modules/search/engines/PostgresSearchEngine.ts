@@ -101,10 +101,19 @@ const BLOG_FTS_EXPRESSION = `(
  *
  * Emitted as literals on purpose — see the note on partial indexes above. This
  * is also the module's single source of truth for "what the public may see":
- * drafts, archived posts, soft-deleted posts, and non-PUBLIC posts are excluded
- * here, once, for every query in the file.
+ * drafts, archived posts, soft-deleted posts, non-PUBLIC posts and
+ * moderation-hidden posts are excluded here, once, for every query in the file.
+ *
+ * `isHidden` is deliberately NOT added to the `blog_search_published_idx`
+ * predicate. Adding it there would shrink the index by the handful of hidden
+ * rows a healthy platform has, at the cost of rebuilding a shared index that
+ * the four feeds also depend on. The planner still uses the existing partial
+ * index for these queries — a query predicate that is strictly narrower than an
+ * index predicate implies it — and filters the flag on the heap fetch it was
+ * already doing. Revisit only if hidden rows ever become a large fraction of
+ * the published corpus, which would be a much bigger problem than an index.
  */
-const PUBLIC_BLOG_PREDICATE = `b."status" = 'PUBLISHED' AND b."visibility" = 'PUBLIC'`;
+const PUBLIC_BLOG_PREDICATE = `b."status" = 'PUBLISHED' AND b."visibility" = 'PUBLIC' AND b."isHidden" = false`;
 
 /**
  * The text-search config as a SQL LITERAL, not a bind parameter.

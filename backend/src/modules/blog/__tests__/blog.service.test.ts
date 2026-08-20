@@ -307,3 +307,88 @@ describe('autosave', () => {
     expect(eventBus.emit).not.toHaveBeenCalled();
   });
 });
+
+describe('moderation removal and its undo', () => {
+  const MODERATOR = { userId: 'mod-1', role: 'MODERATOR' } as any;
+  const ADMINISTRATOR = { userId: 'admin-1', role: 'ADMIN' } as any;
+
+  it('leaves a removed blog beyond its author\u2019s reach', async () => {
+    repo.findById.mockResolvedValue(makeBlog({ status: 'DELETED', isHidden: true }));
+
+    // Without the hide flag this would be a legal DELETED \u2192 DRAFT transition,
+    // and the author would be able to undo an administrator's removal.
+    await expect(blogService.restore('blog-1', AUTHOR, 'USER')).rejects.toMatchObject({
+      statusCode: 409,
+      errorCode: 'CONTENT_MODERATED',
+    });
+  });
+
+  it('leaves it beyond an administrator\u2019s reach through the author path too', async () => {
+    repo.findById.mockResolvedValue(makeBlog({ status: 'DELETED', isHidden: true }));
+
+    // Undoing a removal is not forbidden \u2014 it is done through the moderation
+    // endpoint, which records who did it and why.
+    await expect(blogService.restore('blog-1', 'admin-1', 'ADMIN')).rejects.toMatchObject({
+      statusCode: 409,
+      errorCode: 'CONTENT_MODERATED',
+    });
+  });
+
+  it('lifts a plain hide for a moderator, leaving the status alone', async () => {
+    repo.findMetaById.mockResolvedValue(makeBlog({ status: 'PUBLISHED', isHidden: true }));
+    repo.moderationRestore.mockResolvedValue(true);
+
+    await blogService.restoreFromModeration('blog-1', MODERATOR);
+
+    expect(repo.moderationRestore).toHaveBeenCalledWith('blog-1', { revive: false });
+    expect(eventBus.emit).toHaveBeenCalledWith(
+      EVENTS.CONTENT_RESTORED,
+      expect.objectContaining({ targetType: 'BLOG', targetId: 'blog-1', actorId: 'mod-1' })
+    );
+  });
+
+  it('refuses a moderator the revival of an administrator\u2019s removal', async () => {
+    repo.findMetaById.mockResolvedValue(makeBlog({ status: 'DELETED', isHidden: true }));
+
+    await expect(blogService.restoreFromModeration('blog-1', MODERATOR)).rejects.toMatchObject({
+      statusCode: 403,
+      errorCode: 'FORBIDDEN',
+    });
+    expect(repo.moderationRestore).not.toHaveBeenCalled();
+    expect(eventBus.emit).not.toHaveBeenCalled();
+  });
+
+  it('revives a removal for an administrator', async () => {
+    repo.findMetaById.mockResolvedValue(makeBlog({ status: 'DELETED', isHidden: true }));
+    repo.moderationRestore.mockResolvedValue(true);
+
+    await blogService.restoreFromModeration('blog-1', ADMINISTRATOR);
+
+    expect(repo.moderationRestore).toHaveBeenCalledWith('blog-1', { revive: true });
+    expect(eventBus.emit).toHaveBeenCalledWith(
+      EVENTS.CONTENT_RESTORED,
+      expect.objectContaining({ targetId: 'blog-1' })
+    );
+  });
+
+  it('will not resurrect a blog its author deleted', async () => {
+    // DELETED but not hidden: the author's own doing. Moderation has no undo to
+    // perform here, and reviving it would overrule a decision that was theirs.
+    repo.findMetaById.mockResolvedValue(makeBlog({ status: 'DELETED', isHidden: false }));
+
+    await expect(
+      blogService.restoreFromModeration('blog-1', ADMINISTRATOR)
+    ).rejects.toMatchObject({ statusCode: 409, errorCode: 'NOT_HIDDEN' });
+    expect(repo.moderationRestore).not.toHaveBeenCalled();
+  });
+
+  it('reports a lost race as a conflict instead of announcing a restore', async () => {
+    repo.findMetaById.mockResolvedValue(makeBlog({ status: 'DELETED', isHidden: true }));
+    repo.moderationRestore.mockResolvedValue(false);
+
+    await expect(
+      blogService.restoreFromModeration('blog-1', ADMINISTRATOR)
+    ).rejects.toMatchObject({ statusCode: 409 });
+    expect(eventBus.emit).not.toHaveBeenCalled();
+  });
+});

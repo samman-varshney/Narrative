@@ -33,6 +33,12 @@ export const blogCardSelect = {
   coverImage: true,
   status: true,
   visibility: true,
+  // Moderation state rides along on every card and detail payload. The author
+  // has to be told their post was hidden — a post that silently stops appearing
+  // anywhere, with the dashboard still listing it as published, is
+  // indistinguishable from a platform bug.
+  isHidden: true,
+  hiddenAt: true,
   readingTimeMinutes: true,
   wordCount: true,
   charCount: true,
@@ -64,6 +70,7 @@ export const blogVisibilitySelect = {
   id: true,
   status: true,
   visibility: true,
+  isHidden: true,
   authorId: true,
   // Title/slug ride along for notification copy and deep links. Still four
   // scalars — nothing like the content JSON `blogDetailSelect` would pull.
@@ -85,6 +92,7 @@ export const blogMetaSelect = {
   authorId: true,
   status: true,
   visibility: true,
+  isHidden: true,
   title: true,
   slug: true,
   readingTimeMinutes: true,
@@ -159,6 +167,13 @@ export interface AuthorFilter {
    * describe different sets.
    */
   order?: AuthorBlogOrder;
+  /**
+   * Drops moderation-hidden blogs. OFF by default, because the author's own
+   * management views must keep showing a hidden post (with its flag) — losing
+   * track of it is worse than seeing it. Turned on by the summary surfaces
+   * where a hidden post would read as a live one; see `blogService.listMyBlogs`.
+   */
+  excludeHidden?: boolean;
 }
 
 export interface UpdateBlogData {
@@ -274,6 +289,114 @@ export class BlogRepository {
         ...(opts.publishedAt && { publishedAt: opts.publishedAt }),
       },
       select: blogDetailSelect,
+    });
+  }
+
+  /**
+   * Moderation hide/restore, as a CONDITIONAL update.
+   *
+   * Returns whether this call is the one that changed the row. Two moderators
+   * acting on the same blog from the same queue page is an ordinary occurrence,
+   * and without the condition both would "succeed", both would write an audit
+   * record, and the author would be told twice. Reported as a conflict instead.
+   *
+   * `hiddenAt` moves with the flag rather than being left behind on restore, so
+   * the pair can never say "visible, hidden since Tuesday".
+   */
+  async setModerationHidden(id: string, hidden: boolean): Promise<boolean> {
+    const result = await prisma.blog.updateMany({
+      where: { id, isHidden: !hidden },
+      data: { isHidden: hidden, hiddenAt: hidden ? new Date() : null },
+    });
+    return result.count === 1;
+  }
+
+  /**
+   * Moderation delete: DELETED unless it already is. Conditional for the same
+   * reason `setModerationHidden` is — two moderators, one queue row.
+   *
+   * `isHidden` is set ALONGSIDE the status, and that pairing is load-bearing
+   * twice over:
+   *
+   *  - It is what makes the removal stick. Every author-side write is gated on
+   *    `isHidden` by `assertNotModerated`, and on `isHidden` only — so a removal
+   *    that moved the status alone would leave `POST /blogs/:id/restore`
+   *    (DELETED → DRAFT) wide open to the author. The removal would be undoable
+   *    by the very person it was aimed at, with nothing in the audit log.
+   *  - It is what tells a later restore whose deletion this was. `status =
+   *    DELETED AND isHidden` means moderation removed it; a plain DELETED row is
+   *    the author's own doing, because their delete cannot run while the flag is
+   *    set. No `deletedBy` column, and none needed.
+   *
+   * `hiddenAt` moves to now even on an already-hidden blog: it records when the
+   * CURRENT withholding began, and a removal is a new, stronger one. The full
+   * sequence lives in the audit log, which is append-only and is the place to
+   * read history from.
+   */
+  async moderationDelete(id: string): Promise<boolean> {
+    const result = await prisma.blog.updateMany({
+      where: { id, status: { not: 'DELETED' } },
+      data: { status: 'DELETED', isHidden: true, hiddenAt: new Date() },
+    });
+    return result.count === 1;
+  }
+
+  /**
+   * Moderation restore: lifts the hide, and — when `revive` is set — brings a
+   * moderation-REMOVED blog back in the same write.
+   *
+   * A revived blog lands in DRAFT, not in whatever status it held before the
+   * removal. That status is recorded nowhere, and defaulting it to PUBLISHED
+   * would put content an administrator judged removable straight back in front
+   * of readers. The author re-publishes, which re-runs the publish path.
+   *
+   * Both shapes stay CONDITIONAL, and each condition names the full state it
+   * expects rather than just the row id: two moderators restoring the same queue
+   * entry still yield one restore, one audit record and one notification, and a
+   * restore that races a removal loses cleanly (0 rows → 409) instead of
+   * half-applying.
+   */
+  async moderationRestore(id: string, opts: { revive: boolean }): Promise<boolean> {
+    const result = await prisma.blog.updateMany({
+      where: opts.revive
+        ? { id, isHidden: true, status: 'DELETED' }
+        : { id, isHidden: true, status: { not: 'DELETED' } },
+      data: {
+        isHidden: false,
+        hiddenAt: null,
+        ...(opts.revive && { status: 'DRAFT' as const }),
+      },
+    });
+    return result.count === 1;
+  }
+
+  /**
+   * Everything a moderator needs to judge a blog, in one query.
+   *
+   * Includes the content JSON — a moderation decision cannot be made from a
+   * title — which is exactly why this is separate from `findMetaById` rather
+   * than an option on it: nothing else on the platform should be loading a
+   * blog's body to answer a question about its state.
+   */
+  findModerationSnapshot(id: string) {
+    return prisma.blog.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        title: true,
+        slug: true,
+        subtitle: true,
+        content: true,
+        status: true,
+        visibility: true,
+        isHidden: true,
+        hiddenAt: true,
+        authorId: true,
+        author: { select: blogAuthorSelect },
+        publishedAt: true,
+        createdAt: true,
+        updatedAt: true,
+      },
     });
   }
 
@@ -401,10 +524,18 @@ export class BlogRepository {
    * an analytics ranking, say — is the only reason this exists, and the batching
    * is the reason it is a repository method instead of a loop over `findById`.
    */
-  findCardsByIds(authorId: string, ids: string[]): Promise<BlogCard[]> {
+  findCardsByIds(
+    authorId: string,
+    ids: string[],
+    opts: { excludeHidden?: boolean } = {}
+  ): Promise<BlogCard[]> {
     if (ids.length === 0) return Promise.resolve([]);
     return prisma.blog.findMany({
-      where: { id: { in: ids }, authorId },
+      where: {
+        id: { in: ids },
+        authorId,
+        ...(opts.excludeHidden && { isHidden: false }),
+      },
       select: blogCardSelect,
     });
   }
@@ -418,6 +549,7 @@ export class BlogRepository {
       authorId,
       ...(opts.statuses && { status: { in: opts.statuses } }),
       ...(opts.visibility && { visibility: opts.visibility }),
+      ...(opts.excludeHidden && { isHidden: false }),
     };
   }
 

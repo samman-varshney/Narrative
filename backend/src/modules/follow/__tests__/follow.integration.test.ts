@@ -1,5 +1,6 @@
 import request from 'supertest';
 import app from '../../../app';
+import { allowActiveAccounts } from '../../../test/auth';
 import { followService } from '../follow.service';
 import { tokensService } from '../../auth/tokens.service';
 import { AppError } from '../../../core/exceptions/AppError';
@@ -22,7 +23,11 @@ const STATUS = {
 };
 
 describe('Follow Endpoints (Integration Mocks)', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // Following sits behind `requireActiveAccount`; see src/test/auth.ts.
+    allowActiveAccounts();
+  });
 
   describe('POST /api/v1/users/:userId/follow', () => {
     it('returns 401 without authentication', async () => {

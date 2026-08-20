@@ -15,6 +15,7 @@ import {
   MIN_COMMENT_LENGTH,
 } from './comment.validator';
 import { AppError } from '../../core/exceptions/AppError';
+import { assertPermission } from '../auth/permissions';
 import { eventBus, EVENTS } from '../../core/events/eventBus';
 import { buildCursorPage } from '../../core/utils/pagination';
 import { sanitizePlainText } from '../../core/utils/sanitizeText';
@@ -71,6 +72,16 @@ export interface CommentListResult {
  */
 export interface ReceivedCommentDTO extends CommentDTO {
   blog: { id: string; title: string; slug: string };
+}
+
+/**
+ * The authenticated moderator performing an administrative action. Built from
+ * the request's token by the caller; no method here takes an actor id from
+ * anywhere else.
+ */
+export interface ModerationActor {
+  userId: string;
+  role: string;
 }
 
 const DELETED_PLACEHOLDER = 'This comment has been deleted.';
@@ -261,6 +272,16 @@ export class CommentService {
     if (comment.deletedAt) {
       throw new AppError('Cannot edit a deleted comment', 409, 'COMMENT_DELETED');
     }
+    // A hidden comment cannot be edited, by its author or by an admin. Otherwise
+    // the moderated text could simply be replaced while the hide stays in place,
+    // and the record a moderator acted on would no longer be the text they saw.
+    if (comment.isHidden) {
+      throw new AppError(
+        'This comment has been hidden by moderation and cannot be modified',
+        409,
+        'CONTENT_MODERATED'
+      );
+    }
 
     const content = this.sanitize(input.content);
     const updated = await commentRepository.update(id, content);
@@ -277,6 +298,20 @@ export class CommentService {
   async softDelete(id: string, userId: string, role: string): Promise<CommentDTO> {
     const comment = await this.load(id);
     this.assertOwnership(comment.authorId, userId, role);
+    // A hidden comment cannot be deleted through the author path, for the same
+    // reason it cannot be edited: the state a moderator acted on must not move
+    // underneath the decision. It also keeps "tombstoned AND hidden" meaning
+    // exactly one thing — moderation removed this — which is what
+    // `restoreFromModeration` reads to decide whether it may revive the row.
+    // An administrator who wants it gone uses the removal endpoint, which is
+    // audited; the author's own copy is already withheld from every reader.
+    if (comment.isHidden) {
+      throw new AppError(
+        'This comment has been hidden by moderation and cannot be modified',
+        409,
+        'CONTENT_MODERATED'
+      );
+    }
     if (comment.deletedAt) {
       return toCommentDTO(comment, undefined, await commentRepository.countReplies(id));
     }
@@ -290,10 +325,29 @@ export class CommentService {
     return toCommentDTO(updated, undefined, await commentRepository.countReplies(id));
   }
 
-  /** Restores a soft-deleted comment. ADMIN only. */
-  async restore(id: string, role: string): Promise<CommentDTO> {
-    this.assertAdmin(role);
+  /**
+   * Restores a soft-deleted comment (clears the tombstone).
+   *
+   * Distinct from `restoreFromModeration` below, which lifts a HIDE. The two
+   * flags mean different things — deleted is "this text is gone", hidden is
+   * "this text is withheld" — and a comment can be in either state
+   * independently, so one method could not correctly serve both.
+   */
+  async restore(id: string, actor: ModerationActor): Promise<CommentDTO> {
+    assertPermission(actor.role, 'content:restore');
     const comment = await this.load(id);
+    // A moderation REMOVAL carries the hide flag too, and undoing one is not
+    // this method's job: it is administrator-level and it has to leave an audit
+    // record, both of which `restoreFromModeration` handles. Without this guard
+    // that endpoint's `content:delete` check would be trivially side-stepped by
+    // calling the cheaper one next door.
+    if (comment.isHidden) {
+      throw new AppError(
+        'This comment was removed by moderation; restore it through the moderation endpoint',
+        409,
+        'CONTENT_MODERATED'
+      );
+    }
     const updated = await commentRepository.restore(id);
 
     eventBus.emit(EVENTS.COMMENT_RESTORED, {
@@ -304,18 +358,142 @@ export class CommentService {
     return toCommentDTO(updated, undefined, await commentRepository.countReplies(id));
   }
 
-  /** Hides a comment from public view (moderation). ADMIN only. */
-  async hide(id: string, role: string): Promise<CommentDTO> {
-    this.assertAdmin(role);
-    const comment = await this.load(id);
-    const updated = await commentRepository.setHidden(id, true);
+  // ---- Moderation seam -----------------------------------------------------
+  //
+  // Comment owns `isHidden`, so moderation acts through these rather than
+  // writing the column. Each authorizes, writes conditionally, and emits the
+  // fact; the caller writes the audit record. Mirrors the Blog module's seam
+  // deliberately — a moderator's two most common actions should not have two
+  // different shapes behind them.
 
-    eventBus.emit(EVENTS.COMMENT_HIDDEN, {
-      commentId: id,
+  /** Withholds a comment from public view. The tombstone keeps replies readable. */
+  async hideForModeration(id: string, actor: ModerationActor, reason?: string) {
+    assertPermission(actor.role, 'content:hide');
+
+    const comment = await this.load(id);
+    const changed = await commentRepository.setModerationHidden(id, true);
+    if (!changed) {
+      throw new AppError('This comment is already hidden', 409, 'ALREADY_HIDDEN');
+    }
+
+    eventBus.emit(EVENTS.CONTENT_MODERATED, {
+      targetType: 'COMMENT',
+      targetId: id,
+      ownerId: comment.authorId,
+      actorId: actor.userId,
+      action: 'HIDDEN',
+      reason: reason ?? null,
+      blogId: comment.blogId,
+    });
+
+    return this.getModerationSnapshot(id);
+  }
+
+  /**
+   * Lifts a moderation hide, and revives a moderation removal.
+   *
+   * Which one it is comes from the row: a comment that is tombstoned *and*
+   * hidden was removed by moderation, since the author's own delete is refused
+   * while the hide flag is set. A comment that is merely tombstoned was deleted
+   * by its author and stays deleted — `restore` above is the path for that one,
+   * and it exists precisely so this method never has to guess.
+   *
+   * Reviving costs `content:delete`, the permission that performed the removal.
+   * See `blogService.restoreFromModeration` for why undoing an
+   * administrator-only action cannot be a moderator-level act.
+   */
+  async restoreFromModeration(id: string, actor: ModerationActor) {
+    assertPermission(actor.role, 'content:restore');
+
+    const comment = await this.load(id);
+
+    if (!comment.isHidden) {
+      throw new AppError(
+        comment.deletedAt
+          ? 'This comment was deleted by its author, not by moderation'
+          : 'This comment is not hidden',
+        409,
+        'NOT_HIDDEN'
+      );
+    }
+
+    const revive = comment.deletedAt !== null;
+    if (revive) assertPermission(actor.role, 'content:delete');
+
+    const changed = await commentRepository.moderationRestore(id, { revive });
+    if (!changed) {
+      // Lost the race to another moderator; the conditional write is the arbiter.
+      throw new AppError('This comment is not hidden', 409, 'NOT_HIDDEN');
+    }
+
+    eventBus.emit(EVENTS.CONTENT_RESTORED, {
+      targetType: 'COMMENT',
+      targetId: id,
+      ownerId: comment.authorId,
+      actorId: actor.userId,
+      blogId: comment.blogId,
+      // Unlike a blog, a revived comment IS visible again the moment its
+      // tombstone clears — there is no draft state to come back to. Carried
+      // anyway so consumers can read the field without checking the target type.
+      revived: revive,
+    });
+
+    return this.getModerationSnapshot(id);
+  }
+
+  /**
+   * Removes a comment outright (soft delete — the tombstone stays so replies
+   * keep their place in the thread). Administrator-only; see the permission
+   * catalogue for why `content:delete` is not delegated to moderators.
+   */
+  async deleteForModeration(id: string, actor: ModerationActor, reason?: string) {
+    assertPermission(actor.role, 'content:delete');
+
+    const comment = await this.load(id);
+    const changed = await commentRepository.moderationDelete(id);
+    if (!changed) {
+      throw new AppError('This comment is already deleted', 409, 'ALREADY_DELETED');
+    }
+
+    eventBus.emit(EVENTS.CONTENT_MODERATED, {
+      targetType: 'COMMENT',
+      targetId: id,
+      ownerId: comment.authorId,
+      actorId: actor.userId,
+      action: 'DELETED',
+      reason: reason ?? null,
+      blogId: comment.blogId,
+    });
+
+    return this.getModerationSnapshot(id);
+  }
+
+  /**
+   * What an administrative surface renders for a comment: the RAW text (not the
+   * tombstone placeholder a reader gets — a moderator has to see what was
+   * actually written), its author, and its moderation state.
+   *
+   * Returns null for an unknown id rather than throwing, so a report whose
+   * target has since been hard-deleted renders as "content unavailable".
+   */
+  async getModerationSnapshot(id: string) {
+    const comment = await commentRepository.findById(id);
+    if (!comment) return null;
+
+    return {
+      id: comment.id,
       blogId: comment.blogId,
       authorId: comment.authorId,
-    });
-    return toCommentDTO(updated, undefined, await commentRepository.countReplies(id));
+      author: comment.author,
+      content: comment.content,
+      parentId: comment.parentId,
+      depth: comment.depth,
+      isHidden: comment.isHidden,
+      hiddenAt: comment.hiddenAt,
+      isDeleted: comment.deletedAt !== null,
+      createdAt: comment.createdAt,
+      updatedAt: comment.updatedAt,
+    };
   }
 
   // ---- Retrieval ----
@@ -510,11 +688,6 @@ export class CommentService {
     }
   }
 
-  private assertAdmin(role: string): void {
-    if (role !== 'ADMIN') {
-      throw new AppError('Admin privileges required', 403, 'FORBIDDEN');
-    }
-  }
 }
 
 /** Removes the last `/segment` from a materialized path (`"a/b/c"` -> `"a/b"`). */

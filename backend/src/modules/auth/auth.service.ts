@@ -1,7 +1,9 @@
 import { userRepository } from '../user/user.repository';
+import { userService } from '../user/user.service';
 import { tokensService, TokenPayload } from './tokens.service';
 import { passwordService } from './password.service';
 import { sessionService } from './session.service';
+import { accountStatusService } from './accountStatus.service';
 import { AppError } from '../../core/exceptions/AppError';
 import { RegisterInput, LoginInput } from './auth.validator';
 import { logger } from '../../core/utils/logger';
@@ -53,6 +55,40 @@ export class AuthService {
       throw new AppError('Your account has been suspended', 403, 'ACCOUNT_SUSPENDED');
     }
 
+    /**
+     * Deactivated accounts reactivate by logging in.
+     *
+     * This sits below the password check on purpose — the same reason the
+     * suspension branch does. Reactivating before verifying the password would
+     * let anyone who knows an email address pull a hidden account back into
+     * public view, which is a stranger undoing the user's decision for them.
+     * Verified credentials ARE the confirmation, so there is no separate
+     * reactivation token to mint, mail, store or expire.
+     *
+     * The User module performs the status write; Auth asks for it. Ownership of
+     * `User.status` does not move just because this is where the trigger lives.
+     */
+    const reactivated =
+      user.status === 'DEACTIVATED' ? await userService.reactivate(user.id) : false;
+
+    if (reactivated) {
+      /**
+       * Prime the status cache HERE rather than leaving it to the
+       * USER_REACTIVATED subscriber.
+       *
+       * `emit` is queue-backed: the subscriber runs whenever the domain-events
+       * worker gets to it. Deactivation primed this key to DEACTIVATED with a
+       * 60-second TTL, so between this login and that dispatch every guarded
+       * request from the user would be refused with ACCOUNT_DEACTIVATED — a
+       * successful login handing back tokens that do not work yet. Writing it
+       * synchronously closes the window; the subscriber remains the backstop for
+       * any other path that reactivates an account.
+       */
+      await accountStatusService.prime(user.id, 'ACTIVE');
+      user.status = 'ACTIVE';
+      user.deactivatedAt = null;
+    }
+
     const payload: TokenPayload = { userId: user.id, role: user.role };
     const accessToken = tokensService.generateAccessToken(payload);
     const refreshToken = tokensService.generateRefreshToken(payload);
@@ -65,6 +101,9 @@ export class AuthService {
       user: userWithoutPassword,
       accessToken,
       refreshToken,
+      // Lets the client say "welcome back, your account has been reactivated"
+      // instead of silently restoring a profile the user last saw hidden.
+      reactivated,
     };
   }
 

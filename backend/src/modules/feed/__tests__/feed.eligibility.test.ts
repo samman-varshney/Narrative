@@ -12,6 +12,7 @@ import { FEED_ELIGIBILITY, FEED_VISIBILITY, isFeedEligible } from '../feed.eligi
 const blog = (overrides: Partial<Parameters<typeof isFeedEligible>[0]> = {}) => ({
   status: 'PUBLISHED' as const,
   visibility: 'PUBLIC' as const,
+  isHidden: false,
   publishedAt: new Date('2026-01-01T00:00:00Z'),
   author: { status: 'ACTIVE' },
   ...overrides,
@@ -60,6 +61,12 @@ describe('isFeedEligible', () => {
     expect(isFeedEligible(blog({ author: { status } }))).toBe(false);
   });
 
+  it('rejects a moderation-hidden post', () => {
+    // Hidden is an axis of its own, not a status: an author republishing a
+    // hidden post must not bring it back into discovery.
+    expect(isFeedEligible(blog({ isHidden: true }))).toBe(false);
+  });
+
   it('rejects a published row with no publication instant', () => {
     // It cannot be ordered deterministically, so it cannot be paged without
     // risking duplicates — excluded rather than sorted arbitrarily.
@@ -80,6 +87,10 @@ describe('FEED_ELIGIBILITY', () => {
 
   it('gates on the author account as well as the post', () => {
     expect(sql).toContain(`u."status" = 'ACTIVE'`);
+  });
+
+  it('excludes moderation-hidden posts', () => {
+    expect(sql).toContain(`b."isHidden" = false`);
   });
 
   it('requires a publication instant', () => {
