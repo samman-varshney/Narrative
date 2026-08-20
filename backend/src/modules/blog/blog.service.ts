@@ -393,7 +393,16 @@ export class BlogService {
 
   async createCategory(name: string) {
     try {
-      return await blogRepository.createCategory(name.trim());
+      const category = await blogRepository.createCategory(name.trim());
+      // The Search module caches the category vocabulary for minutes at a time;
+      // this lets it drop that cache now rather than serve a directory that is
+      // missing a category an admin just created.
+      eventBus.emit(EVENTS.CATEGORY_CREATED, {
+        categoryId: category.id,
+        name: category.name,
+        slug: category.slug,
+      });
+      return category;
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
         throw new AppError('Category already exists', 409, 'CATEGORY_EXISTS');

@@ -7,7 +7,7 @@ import RedisStore from 'rate-limit-redis';
 import cookieParser from 'cookie-parser';
 import { redis } from './core/providers/redis';
 import { globalErrorHandler } from './core/middlewares/errorHandler';
-import { skipInTests } from './core/middlewares/rateLimiter';
+import { skipInTests, hasDedicatedLimiter } from './core/middlewares/rateLimiter';
 import { logger } from './core/utils/logger';
 import { authRoutes } from './modules/auth/auth.routes';
 import { userRoutes } from './modules/user/user.routes';
@@ -20,6 +20,7 @@ import {
   userBookmarkRoutes,
 } from './modules/bookmark/bookmark.routes';
 import { notificationRoutes } from './modules/notification/notification.routes';
+import { searchRoutes } from './modules/search/search.routes';
 
 const app: Application = express();
 
@@ -39,7 +40,11 @@ const limiter = rateLimit({
   max: 100, // Limit each IP to 100 requests per `window`
   standardHeaders: true,
   legacyHeaders: false,
-  skip: skipInTests,
+  // Skipped in tests, and skipped for routes that bring their own limiter with a
+  // HIGHER budget than this one — currently just /search. See
+  // SELF_LIMITED_PATH_PREFIXES for why that exemption is necessary rather than
+  // merely convenient.
+  skip: (req) => skipInTests() || hasDedicatedLimiter(req),
   store: new RedisStore({
     sendCommand: redis.call.bind(redis) as any,
     prefix: 'rl:global:', // Distinct namespace so it doesn't share counters with authLimiter
@@ -75,6 +80,9 @@ app.use('/api/v1/blogs', blogRoutes);
 app.use('/api/v1/blogs', blogCommentRoutes);
 app.use('/api/v1/comments', commentRoutes);
 app.use('/api/v1/notifications', notificationRoutes);
+// Search owns its own mount and shares no prefix with another router, so no
+// ordering constraint applies here.
+app.use('/api/v1/search', searchRoutes);
 
 // Global Error Handler
 app.use(globalErrorHandler);

@@ -70,7 +70,7 @@ src/
 * **Bookmark:** Manages user reading lists and saved blogs.
 * **Notification:** Aggregates and delivers in-app and email notifications.
 * **Analytics:** Tracks reads, likes, and engagement metrics via buffered writes.
-* **Search:** Provides cross-entity search (blogs, users, tags).
+* **Search:** Provides cross-entity search (blogs, users, tags, categories) with PostgreSQL full-text + `pg_trgm` ranking behind a swappable engine interface. See [SEARCH_MODULE.md](./SEARCH_MODULE.md).
 * **Media:** Handles parsing, validating, and uploading files via `IStorageProvider`.
 * **Admin:** Platform moderation, category management, and user bans.
 
@@ -162,6 +162,31 @@ graph TD
 8. The Email Worker renders a template and sends via the configured EmailProvider (log in development, Resend in production), then records SENT/FAILED.
 
 See [NOTIFICATION_MODULE.md](./NOTIFICATION_MODULE.md) for the full design.
+
+## 10a. Search Flow
+
+Search is a read-only query module: it owns no writable domain data and calls no
+sibling service.
+
+1. `GET /api/v1/search/blogs?q=...` hits a dedicated rate limiter, then `optionalAuth`.
+2. The controller validates the query string with Zod (`req.query` is read-only in Express 5).
+3. `SearchService` normalizes the query — NFKC, whitespace collapse, length and
+   token caps, `LIKE` escaping — and derives a Redis cache key from it.
+4. On a cache miss the request goes to `ISearchEngine`. `PostgresSearchEngine` is
+   the only implementation today; it holds every line of search SQL.
+5. The engine runs one statement: several index-backed candidate sources (full-text,
+   title prefix, tag, category, author, and a *gated* trigram fuzzy pass), each capped,
+   then a single ranking pass over the union, then a keyset page.
+6. Tags and categories for the page load in two batched queries — never per row.
+7. The result is cached with a per-scope TTL. Popularity and per-user history are
+   recorded fire-and-forget in Redis and can never fail the request.
+8. Cache invalidation is event-driven: `BLOG_*`, `USER_*` and `CATEGORY_CREATED`
+   bump a per-scope generation counter that is part of every cache key, so
+   invalidation is one `INCR` rather than a keyspace scan.
+
+Ranking is deterministic and never falls back to `createdAt DESC`. See
+[SEARCH_MODULE.md](./SEARCH_MODULE.md) for the full design, the ranking ladder,
+the index set, and the migration path to a dedicated search engine.
 
 ## 11. Analytics Flow
 

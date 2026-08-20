@@ -11,6 +11,7 @@ import './modules/media/media.worker';
 import './modules/notification/notification.worker';
 import './modules/notification/email.worker';
 import { registerNotificationSubscribers } from './modules/notification/subscribers';
+import { registerSearchSubscribers } from './modules/search/subscribers';
 import { startDomainEventsWorker } from './core/events/domainEvents.worker';
 
 // Order is load-bearing, and cannot be expressed with import placement: static
@@ -18,6 +19,7 @@ import { startDomainEventsWorker } from './core/events/domainEvents.worker';
 // registered BEFORE the dispatcher consumes, or an already-queued event would
 // dispatch to an empty handler list and be silently dropped.
 registerNotificationSubscribers();
+registerSearchSubscribers();
 startDomainEventsWorker();
 
 const PORT = process.env.PORT || 5000;

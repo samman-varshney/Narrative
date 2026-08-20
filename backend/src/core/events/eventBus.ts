@@ -138,6 +138,13 @@ export const EVENTS = {
   BLOG_DELETED: 'BLOG_DELETED',
   BLOG_COVER_UPDATED: 'BLOG_COVER_UPDATED',
 
+  // Taxonomy — payloads:
+  //  CATEGORY_CREATED { categoryId, name, slug }
+  // Emitted by the Blog module (the owner of the curated category vocabulary).
+  // Search subscribes to it so a new category is suggestible immediately rather
+  // than after its 5-minute cache TTL lapses.
+  CATEGORY_CREATED: 'CATEGORY_CREATED',
+
   // Comment — payloads:
   //  COMMENT_CREATED  { commentId, blogId, authorId, blogAuthorId, parentId }
   //  COMMENT_REPLIED  { commentId, blogId, authorId, parentId, parentAuthorId, blogAuthorId }
