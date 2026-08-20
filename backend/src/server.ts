@@ -12,6 +12,9 @@ import './modules/notification/notification.worker';
 import './modules/notification/email.worker';
 import { registerNotificationSubscribers } from './modules/notification/subscribers';
 import { registerSearchSubscribers } from './modules/search/subscribers';
+import { registerAnalyticsSubscribers } from './modules/analytics/subscribers';
+import { startAnalyticsWorker } from './modules/analytics/analytics.worker';
+import { registerAnalyticsSchedules } from './modules/analytics/analytics.scheduler';
 import { startDomainEventsWorker } from './core/events/domainEvents.worker';
 
 // Order is load-bearing, and cannot be expressed with import placement: static
@@ -20,7 +23,15 @@ import { startDomainEventsWorker } from './core/events/domainEvents.worker';
 // dispatch to an empty handler list and be silently dropped.
 registerNotificationSubscribers();
 registerSearchSubscribers();
+registerAnalyticsSubscribers();
 startDomainEventsWorker();
+
+// The analytics consumer, then its schedules. Order matters only in that the
+// worker should be listening before the first flush job is due; both are
+// idempotent, and `closeWorkers()` already drains this worker on shutdown
+// because it was built through the shared `createWorker` factory.
+startAnalyticsWorker();
+void registerAnalyticsSchedules();
 
 const PORT = process.env.PORT || 5000;
 

@@ -34,14 +34,27 @@ export function startDomainEventsWorker() {
   if (worker) return worker;
 
   worker = createWorker(QUEUES.DOMAIN_EVENTS, async (job) => {
-    const { event, payload } = job.data as { event?: string; payload?: unknown };
+    const { event, payload, eventId, emittedAt } = job.data as {
+      event?: string;
+      payload?: unknown;
+      eventId?: string;
+      emittedAt?: string;
+    };
 
     if (!event) {
       logger.warn({ jobId: job.id }, 'Domain event job missing an event name — skipped');
       return;
     }
 
-    await eventBus.dispatch(event, payload);
+    // `eventId` is absent only on jobs enqueued before the bus started minting
+    // one. The job id is the right fallback: BullMQ keeps it fixed across every
+    // attempt, so a deduplicating subscriber still sees one stable key per
+    // delivery rather than a fresh id on each retry.
+    await eventBus.dispatch(event, payload, {
+      eventId: eventId ?? `job:${job.id}`,
+      event,
+      emittedAt: emittedAt ?? new Date().toISOString(),
+    });
   });
 
   logger.info('Domain events worker started');

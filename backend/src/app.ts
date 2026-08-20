@@ -21,6 +21,7 @@ import {
 } from './modules/bookmark/bookmark.routes';
 import { notificationRoutes } from './modules/notification/notification.routes';
 import { searchRoutes } from './modules/search/search.routes';
+import { analyticsRoutes } from './modules/analytics/analytics.routes';
 
 const app: Application = express();
 
@@ -83,6 +84,10 @@ app.use('/api/v1/notifications', notificationRoutes);
 // Search owns its own mount and shares no prefix with another router, so no
 // ordering constraint applies here.
 app.use('/api/v1/search', searchRoutes);
+// Analytics likewise owns its own mount. Its `/blogs/:blogId/...` routes live
+// UNDER /analytics and never touch the /blogs mount above, so the two cannot
+// shadow each other.
+app.use('/api/v1/analytics', analyticsRoutes);
 
 // Global Error Handler
 app.use(globalErrorHandler);

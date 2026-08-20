@@ -71,11 +71,32 @@ export const blogVisibilitySelect = {
   slug: true,
 } satisfies Prisma.BlogSelect;
 
+/**
+ * Descriptive scalars a sibling module needs to reason about a blog without
+ * loading it: ownership, lifecycle, display text, and the reading estimate.
+ *
+ * Distinct from `blogVisibilitySelect`, which exists for permission checks and
+ * is deliberately kept to what those need. This one adds `readingTimeMinutes`
+ * and `publishedAt` — the Analytics module validates claimed reading durations
+ * against the former and labels its reports with the latter.
+ */
+export const blogMetaSelect = {
+  id: true,
+  authorId: true,
+  status: true,
+  visibility: true,
+  title: true,
+  slug: true,
+  readingTimeMinutes: true,
+  publishedAt: true,
+} satisfies Prisma.BlogSelect;
+
 export type BlogCard = Prisma.BlogGetPayload<{ select: typeof blogCardSelect }>;
 export type BlogDetail = Prisma.BlogGetPayload<{ select: typeof blogDetailSelect }>;
 export type BlogVisibilityRow = Prisma.BlogGetPayload<{
   select: typeof blogVisibilitySelect;
 }>;
+export type BlogMetaRow = Prisma.BlogGetPayload<{ select: typeof blogMetaSelect }>;
 
 /** Reading metadata written on every content change. */
 export interface ReadingMetadataWrite {
@@ -284,6 +305,29 @@ export class BlogRepository {
    */
   findVisibilityById(id: string): Promise<BlogVisibilityRow | null> {
     return prisma.blog.findUnique({ where: { id }, select: blogVisibilitySelect });
+  }
+
+  /** Descriptive scalars for a sibling module. See `blogMetaSelect`. */
+  findMetaById(id: string): Promise<BlogMetaRow | null> {
+    return prisma.blog.findUnique({ where: { id }, select: blogMetaSelect });
+  }
+
+  /** Blog counts by status for one author. Feeds the author analytics overview. */
+  async countByStatus(authorId: string): Promise<Record<BlogStatus, number>> {
+    const rows = await prisma.blog.groupBy({
+      by: ['status'],
+      where: { authorId },
+      _count: { _all: true },
+    });
+
+    // Every status present, so a caller never has to distinguish "none" from
+    // "absent from the grouping".
+    const counts = { DRAFT: 0, PUBLISHED: 0, ARCHIVED: 0, DELETED: 0 } as Record<
+      BlogStatus,
+      number
+    >;
+    for (const row of rows) counts[row.status] = row._count._all;
+    return counts;
   }
 
   /** Cursor page of a single author's blogs, optionally filtered by status/visibility. */

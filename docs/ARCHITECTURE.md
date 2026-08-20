@@ -69,7 +69,7 @@ src/
 * **Follow:** Manages the graph of followers and followings.
 * **Bookmark:** Manages user reading lists and saved blogs.
 * **Notification:** Aggregates and delivers in-app and email notifications.
-* **Analytics:** Tracks reads, likes, and engagement metrics via buffered writes.
+* **Analytics:** Collects views, reading behaviour, engagement and audience growth via Redis-buffered counters flushed to daily PostgreSQL aggregates by a BullMQ worker. Never writes on the request path. See [ANALYTICS_MODULE.md](./ANALYTICS_MODULE.md).
 * **Search:** Provides cross-entity search (blogs, users, tags, categories) with PostgreSQL full-text + `pg_trgm` ranking behind a swappable engine interface. See [SEARCH_MODULE.md](./SEARCH_MODULE.md).
 * **Media:** Handles parsing, validating, and uploading files via `IStorageProvider`.
 * **Admin:** Platform moderation, category management, and user bans.
@@ -84,18 +84,29 @@ To prevent the monolith from becoming a "Big Ball of Mud", strict dependency rul
 
 ## 6. Internal Event Flow
 
+Every event carries a delivery envelope — `{ eventId, event, emittedAt }` — passed
+to handlers as a second argument. `eventId` is minted at emit time and travels
+inside the queue job, so it is identical across every retry of that job and
+different for two genuine emissions of the same payload. That is the property an
+at-least-once consumer needs in order to deduplicate; a payload hash cannot
+distinguish "redelivered" from "the user did it twice".
+
 ```mermaid
 sequenceDiagram
     participant B as BlogModule
-    participant EB as EventBus (EventEmitter)
+    participant Q as domain_events queue
+    participant W as Domain Events Worker
     participant N as NotificationModule
     participant A as AnalyticsModule
-    
-    B->>EB: emit('BLOG_PUBLISHED', blogData)
-    EB->>N: handleBlogPublished(blogData)
-    N-->>EB: (Creates DB notification, Queues Email)
-    EB->>A: incrementAuthorMetrics(blogData.authorId)
-    A-->>EB: (Updates Redis buffer)
+
+    B->>Q: emit('BLOG_PUBLISHED', payload) — fire and forget
+    Note over B: the HTTP request has already returned
+    Q->>W: job { event, payload, eventId, emittedAt }
+    W->>N: handleBlogPublished(payload, meta)
+    N-->>W: (creates notification, queues email)
+    W->>A: onBlogPublished(payload, meta)
+    A-->>W: (buffers a counter in Redis)
+    Note over W: each handler is isolated —<br/>one failing subscriber cannot affect the others
 ```
 
 ## 7. Authentication Flow
@@ -190,12 +201,37 @@ the index set, and the migration path to a dedicated search engine.
 
 ## 11. Analytics Flow
 
-To prevent database contention on read/write heavy metrics (like view counts or read times):
-1. Client triggers an interaction (e.g., 10 seconds spent reading).
-2. Backend API receives telemetry and emits `ANALYTICS_READ_TICK`.
-3. `AnalyticsService` increments a counter in **Redis** (e.g., `HINCRBY blog:stats:123 reads 1`).
-4. A **BullMQ Cron Job** runs every 5 minutes, pulls aggregated metrics from Redis, and performs a bulk `UPSERT` into PostgreSQL.
-5. Redis keys are cleared after successful DB persistence.
+Analytics is a write-heavy, read-light module whose defining constraint is that a
+blog view must never cost a database write.
+
+1. `BlogService.getBySlug` — the only public full-read path — emits `BLOG_VIEWED`
+   fire-and-forget. The reader's response has already been sent.
+2. The Domain Events Worker dispatches it to `BlogAnalyticsSubscriber`, which
+   translates it into an `AnalyticsEvent` and hands it to
+   `IAnalyticsIngestionService`. Subscribers translate only; they hold no
+   aggregation logic.
+3. Ingestion deduplicates (by the bus's retry-stable `eventId`), drops author
+   self-views, applies a 30-minute per-reader view window, and increments a
+   per-blog-per-day Redis hash. Distinct readers go into a HyperLogLog. The
+   bucket is marked in a dirty SET.
+4. A repeatable BullMQ job on `analytics_flush` (every 60s) claims dirty buckets
+   with an **atomic Lua drain** — `SPOP` + `HGETALL` + `DEL` in one evaluation, so
+   two workers can never receive the same bucket — and writes them to PostgreSQL
+   in a single multi-row `INSERT ... ON CONFLICT DO UPDATE`.
+5. A failed write **restores** the drained deltas to Redis and rethrows, so the
+   next cycle picks them up. The flush then bumps a cache generation for exactly
+   the authors whose rows it wrote.
+
+Reading progress (`BLOG_READ_STARTED` / `BLOG_READ_COMPLETED`) has no domain
+counterpart — nothing in the domain changes when a reader scrolls — so it arrives
+as client telemetry on a dedicated, rate-limited ingest endpoint and enters the
+same ingestion seam.
+
+Analytics is intentionally **eventually consistent** (a number is at most ~2
+minutes behind) and is non-critical to every request: if the whole pipeline is
+down, the blog still loads. See [ANALYTICS_MODULE.md](./ANALYTICS_MODULE.md) for
+the full design, the Redis keyspace, the idempotency layers, the index set, and
+the migration path to a dedicated analytics store.
 
 ## 12. Database Access Strategy
 
@@ -310,6 +346,7 @@ graph TD
         Blog[Blog Module]
         Comment[Comment Module]
         Follow[Follow Module]
+        Bookmark[Bookmark Module]
         Notif[Notification Module]
         Analyt[Analytics Module]
     end
@@ -325,12 +362,18 @@ graph TD
     Comment --> DB
     Follow --> DB
     
+    Bookmark --> DB
+
     Blog -- Emits --> EventBus
     Comment -- Emits --> EventBus
     Follow -- Emits --> EventBus
-    
+    Bookmark -- Emits --> EventBus
+
     EventBus -- Listens --> Notif
     EventBus -- Listens --> Analyt
+
+    Analyt --> Redis[(Redis buffer)]
+    Redis -- BullMQ flush --> DB
 ```
 
 ### Frontend Architecture

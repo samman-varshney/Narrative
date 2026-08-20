@@ -10,7 +10,12 @@ describe('eventBus (durable dispatch)', () => {
 
     await eventBus.dispatch(EVENTS.USER_FOLLOWED, { followerId: 'a', followingId: 'b' });
 
-    expect(handler).toHaveBeenCalledWith({ followerId: 'a', followingId: 'b' });
+    // Handlers receive (payload, meta). The payload is asserted exactly; the
+    // meta only has to carry an event id, since its value is a fresh uuid.
+    expect(handler).toHaveBeenCalledWith(
+      { followerId: 'a', followingId: 'b' },
+      expect.objectContaining({ event: EVENTS.USER_FOLLOWED, eventId: expect.any(String) })
+    );
   });
 
   it('runs every handler registered for the same event', async () => {
@@ -70,7 +75,10 @@ describe('eventBus (durable dispatch)', () => {
       eventBus.emit(EVENTS.BLOG_BOOKMARKED, { blogId: 'b1', userId: 'u1' });
       await Promise.resolve(); // let the inline dispatch settle
 
-      expect(handler).toHaveBeenCalledWith({ blogId: 'b1', userId: 'u1' });
+      expect(handler).toHaveBeenCalledWith(
+        { blogId: 'b1', userId: 'u1' },
+        expect.objectContaining({ event: EVENTS.BLOG_BOOKMARKED, eventId: expect.any(String) })
+      );
     });
 
     it('never throws, so a bus failure cannot fail the caller request', () => {

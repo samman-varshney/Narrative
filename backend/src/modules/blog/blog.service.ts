@@ -3,6 +3,7 @@ import {
   blogRepository,
   BlogCard,
   BlogDetail,
+  BlogMetaRow,
   ReadingMetadataWrite,
   SeoWrite,
   CreateBlogData,
@@ -26,6 +27,19 @@ import { slugify } from '../../core/utils/slug';
 export interface Viewer {
   userId: string;
   role: string;
+}
+
+/**
+ * Per-request context that is NOT part of access control.
+ *
+ * Currently just the caller-supplied anonymous id, which lets a signed-out
+ * reader be recognised as the same reader across a session — the only way
+ * BLOG_VIEWED can be deduplicated for anonymous traffic without falling back to
+ * an IP address. Blog neither stores nor interprets it: it is passed straight
+ * through onto the event, and only Analytics ever reads it.
+ */
+export interface ReadContext {
+  anonymousId?: string;
 }
 
 /**
@@ -326,14 +340,58 @@ export class BlogService {
 
   // ---- Reads ----
 
-  /** Public read by slug, gated by the status/visibility access-control matrix. */
-  async getBySlug(slug: string, viewer?: Viewer): Promise<BlogDTO> {
+  /**
+   * Public read by slug, gated by the status/visibility access-control matrix.
+   *
+   * This is the platform's only public full-read path, which makes it the one
+   * honest place to say "a blog was viewed" — so it is where BLOG_VIEWED is
+   * emitted. A client-side beacon was the alternative and is strictly worse: it
+   * is trivially forgeable, it misses readers without JavaScript, and it would
+   * report views for pages the server never actually served.
+   *
+   * The emit is fire-and-forget through the durable bus, so analytics can be
+   * completely down and this method still returns a blog at the same speed.
+   */
+  async getBySlug(slug: string, viewer?: Viewer, context?: ReadContext): Promise<BlogDTO> {
     const blog = await blogRepository.findBySlug(slug);
     if (!blog || !this.canView(blog, viewer)) {
       // 404 (never 403) so we don't leak the existence of hidden blogs.
       throw new AppError('Blog not found', 404, 'BLOG_NOT_FOUND');
     }
+
+    // Only a PUBLISHED blog can be viewed by an audience. An author opening
+    // their own draft through this path is authoring, not readership, and
+    // counting it would put a number on the dashboard that only the author's own
+    // editing produced.
+    if (blog.status === 'PUBLISHED') {
+      eventBus.emit(EVENTS.BLOG_VIEWED, {
+        blogId: blog.id,
+        authorId: blog.authorId,
+        slug: blog.slug,
+        userId: viewer?.userId,
+        anonymousId: context?.anonymousId,
+      });
+    }
+
     return this.toBlogDTO(blog);
+  }
+
+  /**
+   * Descriptive scalars about one blog, for sibling modules.
+   *
+   * The module boundary for "tell me about this blog without loading it".
+   * Analytics uses it to authorize a request against `authorId`, to label a
+   * report, and to sanity-check claimed reading durations against
+   * `readingTimeMinutes`. Returns null rather than throwing: a caller reacting to
+   * an event may legitimately arrive after the blog was deleted.
+   */
+  getBlogMeta(blogId: string): Promise<BlogMetaRow | null> {
+    return blogRepository.findMetaById(blogId);
+  }
+
+  /** Blog counts by status for one author. */
+  countBlogsByStatus(authorId: string) {
+    return blogRepository.countByStatus(authorId);
   }
 
   /** Author/admin-only preview — returns the blog in ANY status/visibility. */

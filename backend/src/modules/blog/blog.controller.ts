@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { ZodType } from 'zod';
-import { blogService, Viewer } from './blog.service';
+import { blogService, ReadContext, Viewer } from './blog.service';
 import {
   slugParamSchema,
   idParamSchema,
@@ -32,6 +32,34 @@ function parseOrThrow<T>(schema: ZodType<T>, data: unknown): T {
 /** Builds the viewer context from an (optionally) authenticated request. */
 function viewerOf(req: Request): Viewer | undefined {
   return req.user ? { userId: req.user.userId, role: req.user.role } : undefined;
+}
+
+/**
+ * Header carrying a signed-out reader's stable id. Generated and persisted by
+ * the client; the server never issues it.
+ */
+const ANONYMOUS_ID_HEADER = 'x-anonymous-id';
+
+/**
+ * Character set and length an anonymous id must satisfy: a UUID, a nanoid or
+ * anything similar. Validated rather than trusted because the value is
+ * concatenated into Redis keys downstream — an unbounded or delimiter-bearing
+ * string is how a client would forge collisions or bloat the keyspace.
+ */
+const ANONYMOUS_ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
+
+/**
+ * Reads the anonymous reader id, if the client sent a well-formed one.
+ *
+ * A malformed value is DROPPED, never rejected: this is optional telemetry
+ * riding along on a public page read, and failing the request would mean a bad
+ * client build takes the blog page down with it.
+ */
+function readContextOf(req: Request): ReadContext | undefined {
+  const raw = req.headers[ANONYMOUS_ID_HEADER];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (!value || !ANONYMOUS_ID_PATTERN.test(value)) return undefined;
+  return { anonymousId: value };
 }
 
 export class BlogController {
@@ -97,7 +125,7 @@ export class BlogController {
 
   async getBySlug(req: Request, res: Response) {
     const { slug } = parseOrThrow(slugParamSchema, req.params);
-    const blog = await blogService.getBySlug(slug, viewerOf(req));
+    const blog = await blogService.getBySlug(slug, viewerOf(req), readContextOf(req));
     sendSuccess(res, { blog });
   }
 

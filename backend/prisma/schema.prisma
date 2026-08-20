@@ -102,9 +102,12 @@ model User {
 
   notifications      Notification[] @relation("NotificationRecipient")
   actedNotifications Notification[] @relation("NotificationActor")
-  sessions      Session[]
-  skills        UserSkill[]
-  media         Media[]        @relation("MediaUploader")
+
+  analyticsDaily     UserAnalyticsDaily[]
+  blogAnalyticsDaily BlogAnalyticsDaily[] @relation("BlogAnalyticsAuthor")
+  sessions           Session[]
+  skills             UserSkill[]
+  media              Media[]              @relation("MediaUploader")
 
   // Current avatar as a proper reference to its Media record (source of truth).
   avatarMediaId String? @unique
@@ -240,6 +243,8 @@ model Blog {
 
   tags       BlogTag[]
   categories BlogCategory[]
+
+  analyticsDaily BlogAnalyticsDaily[]
 
   @@index([slug])
   @@index([authorId])
@@ -429,12 +434,12 @@ model Notification {
   createdAt DateTime @default(now())
 
   deliveries NotificationDelivery[]
+  // NOTE: the unread COUNT is served by a partial index that Prisma cannot
+  // express — see prisma/sql/notification_unread_idx.sql, applied by db:indexes.
 
   @@index([recipientId, createdAt]) // the list query, newest-first
   @@index([recipientId, isRead, createdAt]) // filtered list (unread only)
   @@index([entityType, entityId]) // future: "notifications about this blog"
-  // NOTE: the unread COUNT is served by a partial index that Prisma cannot
-  // express — see prisma/sql/notification_unread_idx.sql, applied by db:indexes.
 }
 
 model NotificationDelivery {
@@ -475,4 +480,106 @@ model Session {
   expiresAt        DateTime
 
   @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Analytics
+// ---------------------------------------------------------------------------
+// Both tables are DAILY aggregates, written only by the analytics flush worker
+// and never by a request. Nothing here is incremented on the HTTP path — that is
+// the whole point of the module: high-frequency events accumulate in Redis and
+// land here in batches, so a viral blog costs one row-lock per flush cycle
+// rather than one per reader.
+//
+// Weekly and monthly reporting is NOT stored. It is derived at query time with
+// `date_trunc`, because a rollup table is duplicated state that has to be kept
+// consistent with its source, and daily rows are already small enough to
+// aggregate on demand (one row per blog per day).
+//
+// Counters are GROSS, never net: `bookmarks` and `unbookmarks` are recorded
+// separately so a day's row stays an immutable record of what happened, and net
+// change is a subtraction at read time. A single net column could not
+// distinguish "no activity" from "ten added, ten removed".
+
+/// Per-blog, per-day metrics. The unit of both blog analytics and — via the
+/// denormalized `authorId` — author analytics.
+model BlogAnalyticsDaily {
+  blogId String
+  blog   Blog   @relation(fields: [blogId], references: [id], onDelete: Cascade)
+
+  /// Denormalized from Blog.authorId. Present so an author's time series is a
+  /// single-table aggregate instead of a join against Blog on every dashboard
+  /// load — see @@index([authorId, date]). Safe to denormalize because
+  /// authorship is immutable in this schema (there is no transfer feature); if
+  /// one is ever added, it must backfill this column.
+  authorId String
+  author   User   @relation("BlogAnalyticsAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+
+  /// UTC calendar day. DATE, not timestamp: the grain IS the day, and a
+  /// timestamp would invite a row per hour to creep in through a bad upsert.
+  date DateTime @db.Date
+
+  /// Deduplicated views — repeat opens by the same reader inside the dedupe
+  /// window collapse into one. NOT raw page loads.
+  views Int @default(0)
+
+  /// Distinct readers, from a per-day HyperLogLog. APPROXIMATE (~0.81% standard
+  /// error) and written absolutely rather than incrementally, unlike every other
+  /// column here. See ANALYTICS_MODULE.md.
+  uniqueViews Int @default(0)
+
+  readStarts      Int @default(0)
+  readCompletions Int @default(0)
+
+  /// Summed, validated, clamped reading seconds. Average read time is
+  /// totalReadingSeconds / readCompletions — stored as a sum so the average is
+  /// recomputable over any date range, which a stored average is not.
+  totalReadingSeconds Int @default(0)
+
+  bookmarks   Int @default(0)
+  unbookmarks Int @default(0)
+
+  /// Comments left by OTHER users. An author answering their own thread is
+  /// participation, not audience engagement.
+  comments Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// (blogId, date) is the PRIMARY KEY, not a surrogate id with a unique index
+  /// beside it. It is the row's real identity — an aggregate for a blog on a day
+  /// is unique by definition — so a synthetic key would add a column and a
+  /// second index that nothing ever looks anything up by. It is also the upsert
+  /// target: `ON CONFLICT ("blogId", "date")`.
+  @@id([blogId, date])
+  /// Author dashboards: "my views over the last 90 days" reads this alone.
+  /// Leading authorId (not date) because every author query is scoped to one
+  /// author first and a range second.
+  @@index([authorId, date])
+  /// Retention pruning and future platform-wide rollups scan by date only.
+  @@index([date])
+}
+
+/// Per-user, per-day metrics that are NOT blog-scoped. Audience growth lives
+/// here; everything view/engagement-shaped rolls up from BlogAnalyticsDaily by
+/// authorId instead, so no metric is maintained in two places.
+model UserAnalyticsDaily {
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  date DateTime @db.Date
+
+  followersGained Int @default(0)
+  followersLost   Int @default(0)
+
+  /// Blogs this user published on this day. A publishing-cadence signal — the
+  /// CURRENT published total is read live from Blog, never summed from here,
+  /// because unpublishing would make the sum drift from the truth.
+  blogsPublished Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@id([userId, date])
+  @@index([date])
 }

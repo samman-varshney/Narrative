@@ -187,8 +187,35 @@ Emitted via the central `eventBus` ([core/events/eventBus.ts](../backend/src/cor
 | `BLOG_RESTORED` | a blog is restored | `{ blogId, authorId, status }` |
 | `BLOG_DELETED` | a blog is soft-deleted | `{ blogId, authorId }` |
 | `BLOG_COVER_UPDATED` | the cover changes | `{ blogId, authorId, coverImage }` |
+| `BLOG_VIEWED` | a **published** blog is read via `GET /blogs/:slug` | `{ blogId, authorId, slug, userId?, anonymousId? }` |
 
 Autosave is intentionally silent (no event) to avoid downstream churn.
+
+### `BLOG_VIEWED`
+
+The only blog event that fires on a READ, which makes it by far the
+highest-volume event on the bus — every subscriber must treat it as such.
+
+It is emitted from `getBySlug` because that is the platform's only public
+full-read path, and therefore the one honest place to say a blog was viewed. A
+client-side beacon was the alternative and is strictly worse: trivially
+forgeable, blind to readers without JavaScript, and able to report views for
+pages the server never served.
+
+Two constraints on when it fires:
+
+- **Only for `PUBLISHED` blogs.** An author opening their own draft through this
+  path is authoring, not readership.
+- **Identity is passed through, never interpreted.** `anonymousId` comes from the
+  client's `x-anonymous-id` header, which the controller validates for shape
+  (16–64 chars of `[A-Za-z0-9_-]`) and otherwise treats as opaque. A malformed
+  value is *dropped, not rejected* — this is optional telemetry riding on a public
+  page read, and failing the request would let a bad client build take the blog
+  page down. Blog stores none of it.
+
+Exactly one of `userId` / `anonymousId` is normally present. Both are absent when
+an anonymous client sends no identifier, in which case the view can be counted
+but not deduplicated. See [ANALYTICS_MODULE.md](./ANALYTICS_MODULE.md).
 
 ## State Machine
 
@@ -278,6 +305,9 @@ sequenceDiagram
 - **User** — `userRepository.findById` (author existence) and `userRepository.findByUsername` (author page); the public author projection `{ id, username, name, avatar, bio, isVerified }` is embedded in every blog payload.
 - **Media** — `mediaService.uploadCoverImage` / `deleteMedia`; the Blog module never touches storage/Cloudinary directly and retires previous cover assets through the Media lifecycle.
 - **Follow** — *not called.* The author relationship is exposed cleanly (`findByAuthor`, author-embedded payloads) so a future Feed module can orchestrate Blog + Follow.
+- **Analytics** — *not called;* the dependency runs the other way. Blog emits `BLOG_VIEWED` and exposes two read-only seams that siblings use instead of reaching into `blogRepository`:
+  - `blogService.getBlogMeta(blogId)` — descriptive scalars (`authorId`, `status`, `visibility`, `title`, `slug`, `readingTimeMinutes`, `publishedAt`) for a module that needs to reason about a blog without loading it. Returns `null` rather than throwing, since an event consumer may legitimately arrive after the blog was deleted.
+  - `blogService.countBlogsByStatus(authorId)` — blog counts by status, with every status present.
 
 ## Performance & Scalability
 

@@ -55,13 +55,19 @@ describe('GET /api/v1/blogs/:slug (public)', () => {
     const res = await request(app).get('/api/v1/blogs/hello-world');
     expect(res.status).toBe(200);
     expect(res.body.data.blog.slug).toBe('hello-world');
-    expect(mocked.getBySlug).toHaveBeenCalledWith('hello-world', undefined);
+    // The third argument is the anonymous-reader context, absent when the
+    // client sends no `x-anonymous-id` header.
+    expect(mocked.getBySlug).toHaveBeenCalledWith('hello-world', undefined, undefined);
   });
 
   it('passes a viewer context when authenticated', async () => {
     mocked.getBySlug.mockResolvedValue(BLOG as any);
     await request(app).get('/api/v1/blogs/hello-world').set('Authorization', authHeader);
-    expect(mocked.getBySlug).toHaveBeenCalledWith('hello-world', { userId: 'user-1', role: 'USER' });
+    expect(mocked.getBySlug).toHaveBeenCalledWith(
+      'hello-world',
+      { userId: 'user-1', role: 'USER' },
+      undefined
+    );
   });
 
   it('surfaces a hidden blog as 404 BLOG_NOT_FOUND', async () => {

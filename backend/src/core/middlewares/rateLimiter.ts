@@ -131,3 +131,39 @@ export const searchLimiter = rateLimit({
     prefix: 'rl:search:', // Distinct namespace for search counters
   }),
 });
+
+/**
+ * Dedicated limiter for the analytics reading-telemetry endpoint.
+ *
+ * This is the platform's only UNAUTHENTICATED write surface, so it needs a limit
+ * of its own rather than sharing the global one. The threat is not load — the
+ * handler does a cached metadata read and a couple of Redis ops — it is
+ * FABRICATION: without a cap, a script could post reading sessions in a loop and
+ * inflate an author's completion rate and average read time. The ingestion
+ * layer's own guards (a completion must consume a real session, and reads per
+ * reader per blog per window are capped) already make that expensive; this makes
+ * it slow as well.
+ *
+ * 30/minute is comfortably above real usage. A reader generates exactly two
+ * events per post — one start, one completion — so this is fifteen posts a
+ * minute from one address, while a shared NAT or an office egress IP still has
+ * ample headroom.
+ */
+export const analyticsIngestLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: {
+      code: 'TOO_MANY_REQUESTS',
+      message: 'Too many analytics events from this IP, please slow down and try again shortly',
+    },
+  },
+  skip: skipInTests,
+  store: new RedisStore({
+    sendCommand: (...args: string[]) => redis.call(args[0], ...args.slice(1)) as any,
+    prefix: 'rl:analytics:', // Distinct namespace for telemetry counters
+  }),
+});
