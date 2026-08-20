@@ -178,6 +178,25 @@ export class CommentRepository {
   countBlogComments(blogId: string): Promise<number> {
     return prisma.comment.count({ where: { blogId, deletedAt: null } });
   }
+
+  /**
+   * Non-deleted comment counts for many blogs in ONE grouped query.
+   *
+   * The batched sibling of `countBlogComments`, added for feed pages: a card
+   * shows a comment count, and a page of fifty cards must not become fifty
+   * counts. Blogs with no comments are ABSENT from the map — a caller reads
+   * that as zero, which is what it means, and avoids materializing a row per
+   * blog that nobody has commented on.
+   */
+  async countForBlogs(blogIds: string[]): Promise<Map<string, number>> {
+    if (blogIds.length === 0) return new Map();
+    const groups = await prisma.comment.groupBy({
+      by: ['blogId'],
+      where: { blogId: { in: blogIds }, deletedAt: null },
+      _count: { _all: true },
+    });
+    return new Map(groups.map((g) => [g.blogId, g._count._all]));
+  }
 }
 
 export const commentRepository = new CommentRepository();

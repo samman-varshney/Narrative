@@ -168,6 +168,29 @@ export class FollowRepository {
   }
 
   /**
+   * The set of users `followerId` follows, as a composable SQL SUBQUERY.
+   *
+   * Exists for the Feed module's following feed, which has to express "blogs by
+   * anyone this user follows" inside a single ordered, keyset-paginated query.
+   * Returning ids instead would be wrong in both directions at scale: a user
+   * following thousands of authors would ship thousands of bind parameters on
+   * every page request, and the planner would lose the option of walking the
+   * published-blog index in order and filtering — the plan that makes a heavy
+   * follower's feed fast.
+   *
+   * A SQL fragment rather than a leaked table name is the point: the Follow
+   * module keeps ownership of what a follow edge looks like and where it is
+   * stored, and the consumer composes an opaque `IN (...)` around it. If this
+   * graph ever moves to its own store, this method changes and nothing else
+   * does.
+   *
+   * `followerId` is BOUND, not interpolated.
+   */
+  followedAuthorIdsSql(followerId: string): Prisma.Sql {
+    return Prisma.sql`SELECT f."followingId" FROM "Follow" f WHERE f."followerId" = ${followerId}`;
+  }
+
+  /**
    * Future-ready: users who follow BOTH `userIdA` and `userIdB` (their mutual
    * followers). Not yet exposed via a route — kept here so the mutual-follow
    * feature can be wired up without touching the data layer.

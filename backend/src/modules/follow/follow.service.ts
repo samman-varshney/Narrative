@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import {
   followRepository,
   FollowWithFollower,
@@ -156,6 +157,30 @@ export class FollowService {
       hasNextPage: page.hasNextPage,
       totalCount,
     };
+  }
+
+  /**
+   * The viewer's followed-author set as a composable SQL subquery, for sibling
+   * modules that need to express "…by someone I follow" inside their own query.
+   *
+   * A pass-through to the repository so consumers depend on this module's
+   * SERVICE, never on its data layer — the dependency rule in
+   * docs/ARCHITECTURE.md § 5. The Feed module is the only caller.
+   */
+  followedAuthorIdsSql(viewerId: string): Prisma.Sql {
+    return followRepository.followedAuthorIdsSql(viewerId);
+  }
+
+  /**
+   * Of `targetUserIds`, which does `viewerId` follow? One batched query.
+   *
+   * Exposed for consumers that annotate or filter a page of content by
+   * relationship — the Feed module's `excludeFollowing` option on Explore. The
+   * batching is the point: the per-item alternative is an N+1 on every feed
+   * page.
+   */
+  getFollowedSubset(viewerId: string, targetUserIds: string[]): Promise<Set<string>> {
+    return followRepository.getFollowedSubset(viewerId, targetUserIds);
   }
 
   /**

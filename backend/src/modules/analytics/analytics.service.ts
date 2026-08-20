@@ -14,12 +14,21 @@ import {
 import { withReportCache } from './analytics.cache';
 import { resolveDateRange, resolveTotalsRange } from './analytics.range';
 import { decodeTopBlogsCursor, encodeTopBlogsCursor, topBlogsFingerprint } from './analytics.cursor';
-import { bucketsAreSingleDays, dateKey, rangeIsSingleDay } from './analytics.time';
+import {
+  bucketsAreSingleDays,
+  dateKey,
+  rangeIsSingleDay,
+  reportingDaysAgo,
+  startOfReportingDay,
+} from './analytics.time';
 import type {
   AnalyticsEvent,
+  BlogEngagementRow,
   BlogOverviewDTO,
   DateRange,
   EngagementPoint,
+  EngagementQuery,
+  EngagementWeights,
   FollowerPoint,
   ReadingStatsDTO,
   TopBlogDTO,
@@ -470,6 +479,67 @@ export class AnalyticsService {
         'analytics: reading telemetry not recorded'
       );
     }
+  }
+
+  // ---- Discovery signals (internal, no HTTP surface) ---------------------
+
+  /**
+   * The platform's most-engaged blogs over a window.
+   *
+   * The Analytics module's contribution to content discovery, consumed by the
+   * Feed & Explore module. There is deliberately NO route behind this and no
+   * authorization check, because it is not reachable from the network: it is a
+   * module-to-module call, and the caller is responsible for never serializing
+   * the counts. Adding an endpoint here would publish per-blog view counts,
+   * which `authorizeBlog` exists to keep private.
+   *
+   * Returns raw rows rather than DTOs — the consumer ranks with them, it does
+   * not render them.
+   */
+  /**
+   * Builds the window a discovery ranking is scored over.
+   *
+   * Exposed rather than left to the caller because a "day" is this module's
+   * definition, not a universal one: aggregates are bucketed by the configured
+   * reporting boundary (`ANALYTICS_REPORTING_UTC_OFFSET_MINUTES`), so a caller
+   * computing UTC midnights would silently shift the window by up to a day
+   * whenever that setting is not zero. `now` is a parameter so a ranking can be
+   * rebuilt against the exact instant it was first built for.
+   *
+   * The window is INCLUSIVE at both ends and `windowDays` counts days, so
+   * `windowDays: 1` means "today", and `7` means "today and the six days
+   * before it".
+   */
+  buildEngagementWindow(input: {
+    windowDays: number;
+    weights: EngagementWeights;
+    now?: Date;
+  }): EngagementQuery {
+    const now = input.now ?? new Date();
+    return {
+      startDate: reportingDaysAgo(input.windowDays - 1, now),
+      endDate: startOfReportingDay(now),
+      weights: input.weights,
+    };
+  }
+
+  getEngagementRanking(query: EngagementQuery, limit: number): Promise<BlogEngagementRow[]> {
+    return this.repository.getEngagementRanking(query, limit);
+  }
+
+  /**
+   * Engagement for a known set of blogs, keyed by blog id.
+   *
+   * A Map rather than an array because every caller needs it by id, and building
+   * that in each of them is how an O(n²) lookup ends up in a ranking loop. Blogs
+   * with no activity in the window are ABSENT — the caller reads that as zero.
+   */
+  async getEngagementForBlogs(
+    blogIds: string[],
+    query: EngagementQuery
+  ): Promise<Map<string, BlogEngagementRow>> {
+    const rows = await this.repository.getEngagementForBlogs(blogIds, query);
+    return new Map(rows.map((row) => [row.blogId, row]));
   }
 
   // ---- DTO mapping -------------------------------------------------------

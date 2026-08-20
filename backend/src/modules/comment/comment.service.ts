@@ -387,6 +387,19 @@ export class CommentService {
     return all;
   }
 
+  /**
+   * Public comment counts for many blogs, keyed by blog id.
+   *
+   * The Comment module's contribution to other modules' list views — the Feed
+   * module renders it on every card. A pass-through to the batched repository
+   * query, so consumers depend on this service rather than on comment storage,
+   * and so "which comments count" (tombstones excluded) stays defined in one
+   * place.
+   */
+  getCommentCounts(blogIds: string[]): Promise<Map<string, number>> {
+    return commentRepository.countForBlogs(blogIds);
+  }
+
   // ---- Helpers ----
 
   private sanitize(raw: string): string {

@@ -136,6 +136,23 @@ export class BookmarkRepository {
   }
 
   /**
+   * Bookmark counts for many blogs in ONE grouped query, served by ([blogId]).
+   *
+   * The batched sibling of `countBlogBookmarks`, added for feed pages, where a
+   * per-card count would otherwise be an N+1. Blogs nobody has bookmarked are
+   * ABSENT from the map rather than present as zero.
+   */
+  async countForBlogs(blogIds: string[]): Promise<Map<string, number>> {
+    if (blogIds.length === 0) return new Map();
+    const groups = await prisma.bookmark.groupBy({
+      by: ['blogId'],
+      where: { blogId: { in: blogIds } },
+      _count: { _all: true },
+    });
+    return new Map(groups.map((g) => [g.blogId, g._count._all]));
+  }
+
+  /**
    * Of `blogIds`, which has `userId` already bookmarked? Single batched query
    * for annotating blog feeds with `isBookmarked` (avoids N+1). Not yet wired to
    * a route — kept here so the Blog module can adopt it without a data-layer change.

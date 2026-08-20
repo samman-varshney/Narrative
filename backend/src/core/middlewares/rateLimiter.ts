@@ -92,11 +92,17 @@ export const bookmarkWriteLimiter = rateLimit({
  * `searchLimiter` below could never fire at all. Exempting the path makes
  * `searchLimiter` the single, real limit on these endpoints.
  *
+ * The feed endpoints are here for the same inversion. An infinite scroll issues
+ * a request per screenful across four feeds, and a reader opening the app,
+ * scrolling a page and switching tabs can pass 100 requests in a single session
+ * — so the global limiter would cut off ordinary browsing of the platform's
+ * primary surface. `feedLimiter` replaces it with a budget sized for scrolling.
+ *
  * `originalUrl` rather than `path`: Express strips the mount prefix from
  * `req.url` inside a `app.use('/api', ...)` middleware, so `req.path` would read
  * `/v1/search/...` here and the check would be quietly mount-dependent.
  */
-export const SELF_LIMITED_PATH_PREFIXES = ['/api/v1/search'];
+export const SELF_LIMITED_PATH_PREFIXES = ['/api/v1/search', '/api/v1/feed'];
 
 export const hasDedicatedLimiter = (req: { originalUrl?: string }): boolean =>
   SELF_LIMITED_PATH_PREFIXES.some((prefix) => (req.originalUrl ?? '').startsWith(prefix));
@@ -129,6 +135,41 @@ export const searchLimiter = rateLimit({
   store: new RedisStore({
     sendCommand: (...args: string[]) => redis.call(args[0], ...args.slice(1)) as any,
     prefix: 'rl:search:', // Distinct namespace for search counters
+  }),
+});
+
+/**
+ * Dedicated limiter for the feed endpoints.
+ *
+ * Feeds are the platform's highest-frequency read: an infinite scroll fires a
+ * request per screenful, and a session touches several feeds. They are also the
+ * natural way to enumerate the whole published corpus one page at a time, which
+ * is the abuse this bounds.
+ *
+ * 120/minute is the balance. A human scrolling continuously produces perhaps
+ * one request every second or two, so this is generous headroom for real use
+ * (and for a shared NAT), while a scraper walking 50-item pages is held to
+ * 6 000 posts a minute — slow enough that the ranked feeds' depth cap and the
+ * chronological feeds' cursor cost make bulk extraction unattractive.
+ *
+ * This is the ONLY limit on these paths — see SELF_LIMITED_PATH_PREFIXES above.
+ */
+export const feedLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: {
+      code: 'TOO_MANY_REQUESTS',
+      message: 'Too many feed requests from this IP, please slow down and try again shortly',
+    },
+  },
+  skip: skipInTests,
+  store: new RedisStore({
+    sendCommand: (...args: string[]) => redis.call(args[0], ...args.slice(1)) as any,
+    prefix: 'rl:feed:', // Distinct namespace for feed counters
   }),
 });
 

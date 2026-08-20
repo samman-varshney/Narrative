@@ -22,6 +22,7 @@ import {
 import { notificationRoutes } from './modules/notification/notification.routes';
 import { searchRoutes } from './modules/search/search.routes';
 import { analyticsRoutes } from './modules/analytics/analytics.routes';
+import { feedRoutes } from './modules/feed/feed.routes';
 
 const app: Application = express();
 
@@ -42,7 +43,7 @@ const limiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   // Skipped in tests, and skipped for routes that bring their own limiter with a
-  // HIGHER budget than this one — currently just /search. See
+  // HIGHER budget than this one — /search and /feed. See
   // SELF_LIMITED_PATH_PREFIXES for why that exemption is necessary rather than
   // merely convenient.
   skip: (req) => skipInTests() || hasDedicatedLimiter(req),
@@ -88,6 +89,10 @@ app.use('/api/v1/search', searchRoutes);
 // UNDER /analytics and never touch the /blogs mount above, so the two cannot
 // shadow each other.
 app.use('/api/v1/analytics', analyticsRoutes);
+// Feed owns its own mount and shares no prefix with another router. Like
+// /search it is exempt from the global limiter and brings its own — see
+// SELF_LIMITED_PATH_PREFIXES in core/middlewares/rateLimiter.
+app.use('/api/v1/feed', feedRoutes);
 
 // Global Error Handler
 app.use(globalErrorHandler);

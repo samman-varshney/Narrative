@@ -1,7 +1,14 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../core/database/prisma';
 import { dateKey } from './analytics.time';
-import type { DateRange, Granularity, TopBlogsMetric } from './analytics.types';
+import type {
+  BlogEngagementRow,
+  DateRange,
+  EngagementQuery,
+  EngagementWeights,
+  Granularity,
+  TopBlogsMetric,
+} from './analytics.types';
 
 /**
  * The analytics READ layer. Every reporting query in the module lives here.
@@ -156,6 +163,43 @@ const EMPTY_TOTALS: AnalyticsTotals = {
   unbookmarks: 0,
   comments: 0,
 };
+
+/**
+ * Per-blog engagement totals over a window. Shared by both discovery queries so
+ * the two can never disagree about what "engagement" counts.
+ *
+ * `netBookmarks` is a subtraction, not a stored column: the aggregate table
+ * records gross bookmarks and unbookmarks separately on purpose (see
+ * schema.prisma), so net is derived at read time.
+ */
+const ENGAGEMENT_COLUMNS = Prisma.sql`
+  "blogId",
+  COALESCE(SUM("views"), 0)::int            AS "views",
+  COALESCE(SUM("uniqueViews"), 0)::int      AS "uniqueReaderDays",
+  COALESCE(SUM("readCompletions"), 0)::int  AS "readCompletions",
+  (COALESCE(SUM("bookmarks"), 0)
+   - COALESCE(SUM("unbookmarks"), 0))::int  AS "netBookmarks",
+  COALESCE(SUM("comments"), 0)::int         AS "comments"
+`;
+
+/**
+ * The weighted engagement score for a `totals` row aliased `t`.
+ *
+ * `GREATEST(t."netBookmarks", 0)` floors the one term that can go negative: a
+ * day on which more readers removed a bookmark than added one is real and worth
+ * recording, but letting it push a score below zero would rank a post BELOW one
+ * nobody interacted with at all, which is not what a discovery feed means by
+ * "less engaging".
+ */
+function engagementScoreExpression(weights: EngagementWeights): Prisma.Sql {
+  return Prisma.sql`(
+      ${weights.views}::float8            * t."views"
+    + ${weights.uniqueReaders}::float8    * t."uniqueReaderDays"
+    + ${weights.readCompletions}::float8  * t."readCompletions"
+    + ${weights.bookmarks}::float8        * GREATEST(t."netBookmarks", 0)
+    + ${weights.comments}::float8         * t."comments"
+  )::float8`;
+}
 
 export class AnalyticsRepository {
   // ---- Blog scope --------------------------------------------------------
@@ -365,6 +409,83 @@ export class AnalyticsRepository {
       ${keyset}
       ORDER BY t."metricValue" DESC, t."blogId" DESC
       LIMIT ${limit + 1}
+    `;
+  }
+
+  // ---- Discovery signals -------------------------------------------------
+
+  /**
+   * The platform's most-engaged blogs over a window, ranked.
+   *
+   * The candidate source behind the Trending feed and half of Explore. Unlike
+   * every other query in this file it is NOT scoped to one author or one blog:
+   * discovery is a platform-wide question. That is safe because it returns ids
+   * and counts to another module, never to a client — see `analytics.types`
+   * § Discovery signals for the privacy rule that comes with it.
+   *
+   * ── Bounded by construction ────────────────────────────────────────────
+   * Two things keep this from becoming a full scan of the aggregate table: the
+   * window (a few days of rows, walked through `@@index([date])`) and the
+   * `LIMIT`. Both are the caller's, and both are required — there is no
+   * "rank everything" mode, because a table that grows by a row per blog per
+   * day has no bottom.
+   *
+   * Blogs whose weighted score is zero are dropped rather than returned and
+   * discarded upstream: on any real platform most rows in the window are
+   * low-traffic, and they cannot influence a ranking they score zero on.
+   *
+   * WEIGHTS ARE BOUND PARAMETERS, not interpolated — they are numbers from a
+   * sibling module's config, and the moment a value like that is pasted into SQL
+   * is the moment the next one comes from a request.
+   */
+  getEngagementRanking(
+    query: EngagementQuery,
+    limit: number
+  ): Promise<BlogEngagementRow[]> {
+    return prisma.$queryRaw<BlogEngagementRow[]>`
+      WITH totals AS (
+        SELECT ${ENGAGEMENT_COLUMNS}
+        FROM "BlogAnalyticsDaily"
+        WHERE "date" >= ${dateKey(query.startDate)}::date
+          AND "date" <= ${dateKey(query.endDate)}::date
+        GROUP BY "blogId"
+      ),
+      scored AS (
+        SELECT t.*, ${engagementScoreExpression(query.weights)} AS "engagementScore"
+        FROM totals t
+      )
+      SELECT * FROM scored
+      WHERE "engagementScore" > 0
+      ORDER BY "engagementScore" DESC, "blogId" DESC
+      LIMIT ${limit}
+    `;
+  }
+
+  /**
+   * The same engagement figures for a KNOWN set of blogs.
+   *
+   * Explore's recency candidates arrive from the Blog side with no engagement
+   * attached; this scores them in one batched query rather than one per blog.
+   * Blogs with no rows in the window are simply absent from the result — the
+   * caller treats that as zero, which is what it means.
+   */
+  getEngagementForBlogs(
+    blogIds: string[],
+    query: EngagementQuery
+  ): Promise<BlogEngagementRow[]> {
+    if (blogIds.length === 0) return Promise.resolve([]);
+
+    return prisma.$queryRaw<BlogEngagementRow[]>`
+      WITH totals AS (
+        SELECT ${ENGAGEMENT_COLUMNS}
+        FROM "BlogAnalyticsDaily"
+        WHERE "blogId" IN (${Prisma.join(blogIds)})
+          AND "date" >= ${dateKey(query.startDate)}::date
+          AND "date" <= ${dateKey(query.endDate)}::date
+        GROUP BY "blogId"
+      )
+      SELECT t.*, ${engagementScoreExpression(query.weights)} AS "engagementScore"
+      FROM totals t
     `;
   }
 }

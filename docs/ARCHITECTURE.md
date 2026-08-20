@@ -33,6 +33,7 @@ src/
 │   ├── notification/
 │   ├── analytics/
 │   ├── search/
+│   ├── feed/
 │   └── admin/
 ├── app.ts                 # Express app setup and middleware wiring
 └── server.ts              # Entry point and server initialization
@@ -71,6 +72,7 @@ src/
 * **Notification:** Aggregates and delivers in-app and email notifications.
 * **Analytics:** Collects views, reading behaviour, engagement and audience growth via Redis-buffered counters flushed to daily PostgreSQL aggregates by a BullMQ worker. Never writes on the request path. See [ANALYTICS_MODULE.md](./ANALYTICS_MODULE.md).
 * **Search:** Provides cross-entity search (blogs, users, tags, categories) with PostgreSQL full-text + `pg_trgm` ranking behind a swappable engine interface. See [SEARCH_MODULE.md](./SEARCH_MODULE.md).
+* **Feed & Explore:** The content-discovery surface — Following, Latest, Explore and Trending. A pure composition module: it owns discovery eligibility, ranking, diversity, feed pagination and feed caching, and composes Blog, Follow, Analytics, Comment and Bookmark for everything else. See [FEED_MODULE.md](./FEED_MODULE.md).
 * **Media:** Handles parsing, validating, and uploading files via `IStorageProvider`.
 * **Admin:** Platform moderation, category management, and user bans.
 
@@ -199,6 +201,41 @@ Ranking is deterministic and never falls back to `createdAt DESC`. See
 [SEARCH_MODULE.md](./SEARCH_MODULE.md) for the full design, the ranking ladder,
 the index set, and the migration path to a dedicated search engine.
 
+## 10b. Feed & Explore Flow
+
+Feed is a read-only composition module: it owns no writable domain data and
+reimplements nothing that another module already owns.
+
+1. `GET /api/v1/feed/{following|latest|explore|trending}` hits a dedicated rate
+   limiter, then `requireAuth` (following) or `optionalAuth` (the rest).
+2. The controller validates the query string with Zod (`req.query` is read-only
+   in Express 5) and calls the service. No SQL, no ranking, no cache logic.
+3. `FeedService` runs the same four-stage pipeline for every feed:
+   **retrieve candidates → apply eligibility → rank + diversify → build the page.**
+4. Retrieval is the module's only SQL. Every query shares ONE eligibility
+   predicate (published, discoverable visibility, active author), emitted as SQL
+   literals so the partial feed indexes are provable to the planner.
+5. Chronological feeds (following, latest) walk a `(publishedAt, id)` keyset —
+   page 100 costs what page 1 costs. The following feed is a semi-join against a
+   SQL fragment owned by the Follow module, never an inlined list of author ids.
+6. Ranked feeds (explore, trending) score a bounded candidate pool with pure
+   functions, spread authors and topics, and freeze the result as a Redis
+   SNAPSHOT that the cursor walks by offset — so a computed ordering paginates
+   without duplicates or gaps.
+7. Engagement comes from the Analytics module, which owns it; Feed supplies only
+   the weights. Those figures order the feed and are never serialized. The counts
+   on a card come from Comment and Bookmark, which are already public.
+8. Hydration is batched: a page of any size costs a fixed five queries.
+9. Cache invalidation is event-driven. `BLOG_*` and `USER_*` bump a per-scope
+   generation that is part of every key (one `INCR`, never a keyspace scan);
+   `USER_FOLLOWED`/`USER_UNFOLLOWED` drop exactly one viewer's cached feed.
+
+Feeds are intentionally **eventually consistent** and never on a write path: a
+blog publishes at the same speed whether or not the feed cache can be
+invalidated. See [FEED_MODULE.md](./FEED_MODULE.md) for the ranking model, the
+cursor design, the index set with EXPLAIN evidence, and the migration path to
+materialized feeds.
+
 ## 11. Analytics Flow
 
 Analytics is a write-heavy, read-light module whose defining constraint is that a
@@ -240,8 +277,9 @@ the migration path to a dedicated analytics store.
 
 ## 13. Caching Strategy (Redis)
 
-* **Read-Heavy Endpoints:** Responses for endpoints like Home Feed, Trending Blogs, and Public Profiles are cached in Redis as serialized JSON.
-* **Invalidation:** Cache entries have a TTL (Time-To-Live). Additionally, relevant write events (e.g., a new blog published) actively purge specific Redis keys (`DEL cache:home_feed`).
+* **Read-Heavy Endpoints:** Responses for endpoints like the feeds, search and public profiles are cached in Redis as serialized JSON.
+* **Invalidation — generation counters, not key deletion:** cache entries carry a TTL, and a relevant domain event advances a per-scope GENERATION number that is part of every key. Invalidation is then one `INCR` and old entries become unreachable instantly, whatever the cache size. The `DEL cache:home_feed` approach this document originally described cannot work for a feed or a search cache: the key encodes the filters, options and cursor, so the set of keys a single publish invalidates is unknowable without re-running every cached query, and `SCAN`/`KEYS` over a shared Redis is O(keyspace). Both the Search and Feed modules use generations; Analytics can be more precise still (per-author generations) because a flush knows exactly whose numbers changed.
+* **Never load-bearing:** every cache read and write is best-effort. Redis being down must degrade a response to "uncached", never to a 500.
 
 ## 14. Background Job Strategy (BullMQ)
 
@@ -299,8 +337,8 @@ While starting as a Modular Monolith, the architecture supports future scaling:
 Before implementation, the following potential design flaws, bottlenecks, and security concerns must be acknowledged:
 
 ### 1. Bottlenecks & Scalability Risks
-* **Fan-Out on Read (Following Feed):** Currently planned to query the DB for all followed authors at read time. As users follow hundreds of active authors, this `IN (author_ids)` query will become a massive bottleneck. 
-  * *Mitigation:* Ensure strict indexing on `author_id` and `created_at`. If metrics indicate slow read times, we must prioritize transitioning to a Fan-Out on Write architecture (pre-computing feeds into Redis lists) earlier than planned.
+* **Fan-Out on Read (Following Feed):** *Addressed in the Feed module's V1, and re-measured.* The feed is NOT an `IN (author_ids)` query — inlining thousands of ids would ship them on every page request and force a sort-everything plan. It is a semi-join against a SQL subquery owned by the Follow module, over partial indexes on `("publishedAt" DESC, "id" DESC)` (shared with Search) and `("authorId", "publishedAt" DESC, "id" DESC)`, cut with a `(publishedAt, id)` keyset. Postgres then picks between walking published blogs in order and filtering (fast when a viewer follows many authors) and walking each followed author (fast when they follow few). Measured at 0.4 ms for a viewer following 500 authors over 50k blogs.
+  * *Residual risk:* a viewer following few but very prolific authors still pays a top-N sort over one author's archive. Mitigated by a higher statistics target on `Blog.authorId`; removed entirely only by materialized feeds, which the module is structured to adopt without changing its cursor format, DTO or API. See [FEED_MODULE.md](./FEED_MODULE.md) § Performance.
 * **Analytics Buffering Crash Risk:** Buffering analytics in Redis before flushing to PostgreSQL introduces a risk of data loss if the Redis instance crashes before the cron job runs.
   * *Mitigation:* Configure Redis with AOF (Append Only File) persistence, and keep the BullMQ flush interval relatively short (e.g., 1-2 minutes).
 
@@ -349,6 +387,7 @@ graph TD
         Bookmark[Bookmark Module]
         Notif[Notification Module]
         Analyt[Analytics Module]
+        Feed[Feed & Explore Module]
     end
     
     subgraph Core
@@ -371,6 +410,15 @@ graph TD
 
     EventBus -- Listens --> Notif
     EventBus -- Listens --> Analyt
+    EventBus -- Listens --> Feed
+
+    %% Feed is a leaf: it composes sibling SERVICES and nothing depends on it,
+    %% so no cycle (Blog -> Feed -> Blog) can form.
+    Feed --> Blog
+    Feed --> Follow
+    Feed --> Analyt
+    Feed --> Comment
+    Feed --> Bookmark
 
     Analyt --> Redis[(Redis buffer)]
     Redis -- BullMQ flush --> DB

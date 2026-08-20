@@ -141,6 +141,18 @@ export class BookmarkService {
   }
 
   /**
+   * Public bookmark counts for many blogs, keyed by blog id.
+   *
+   * The Bookmark module's contribution to other modules' list views — the Feed
+   * module renders it on every card. Counts only; WHO bookmarked a blog stays
+   * private to its owner, which is why there is no batched variant of
+   * `getBookmarkedSubset` exposed here for arbitrary viewers.
+   */
+  getBookmarkCounts(blogIds: string[]): Promise<Map<string, number>> {
+    return bookmarkRepository.countForBlogs(blogIds);
+  }
+
+  /**
    * Bookmark state of `blogId` for `userId`, plus both counts. Gated by the same
    * visibility check as the writes, so a client can't be shown an enabled
    * bookmark button for a blog whose POST would then 404.

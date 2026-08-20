@@ -323,3 +323,57 @@ export type TopBlogsMetric =
   | 'bookmarks'
   | 'comments'
   | 'readCompletions';
+
+// ---------------------------------------------------------------------------
+// Discovery signals
+// ---------------------------------------------------------------------------
+//
+// The Analytics module's read surface for CONTENT DISCOVERY — the capability
+// the Feed & Explore module composes to rank Trending and Explore.
+//
+// It lives here, and the SQL behind it lives in `AnalyticsRepository`, because
+// this module owns engagement data: how it is collected, where it is stored, and
+// what a "day" means. Feed supplies only the WEIGHTS, so ranking policy stays
+// with the module that ranks and data ownership stays with the module that
+// measures. Neither duplicates the other, and nothing about the aggregate
+// schema leaks across the boundary.
+//
+// PRIVACY: these are INTERNAL, module-to-module reads with no HTTP surface.
+// Per-blog view counts are author-private (see § Authorization) and no consumer
+// may serialize them — the Feed module uses them to ORDER results and publishes
+// only public comment/bookmark counts alongside each card.
+
+/**
+ * How much each recorded interaction contributes to an engagement score.
+ *
+ * Supplied by the CALLER on every query and bound as query parameters, never
+ * stored here. A discovery ranking is a product decision that will be retuned;
+ * making it an input means retuning it never touches this module.
+ */
+export interface EngagementWeights {
+  readonly views: number;
+  readonly uniqueReaders: number;
+  readonly readCompletions: number;
+  readonly bookmarks: number;
+  readonly comments: number;
+}
+
+/** One blog's engagement over a window, plus the weighted score derived from it. */
+export interface BlogEngagementRow {
+  blogId: string;
+  views: number;
+  uniqueReaderDays: number;
+  readCompletions: number;
+  /** Bookmarks minus unbookmarks. May be negative; the score floors it at zero. */
+  netBookmarks: number;
+  comments: number;
+  /** `Σ weight × metric` over the window. Comparable only within one query. */
+  engagementScore: number;
+}
+
+/** A window plus the weights to score it by. */
+export interface EngagementQuery {
+  readonly startDate: Date;
+  readonly endDate: Date;
+  readonly weights: EngagementWeights;
+}

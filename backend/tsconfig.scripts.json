@@ -1,0 +1,17 @@
+{
+  // Type-checks `scripts/` alongside `src/`.
+  //
+  // The main tsconfig pins `rootDir: ./src` for the build, which leaves the
+  // operational scripts unchecked — and an unchecked script is one that keeps
+  // importing a symbol long after it was renamed, failing only when someone runs
+  // it against a production database. `npm run typecheck` runs this too.
+  //
+  // No `outDir`/`rootDir`: this config never emits. The scripts are run with
+  // `tsx`, not compiled.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true
+  },
+  "include": ["src/**/*", "scripts/**/*"]
+}
