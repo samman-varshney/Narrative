@@ -10,6 +10,11 @@ module.exports = {
     '^.+\\.ts$': ['ts-jest', {}],
   },
   setupFiles: ['<rootDir>/jest.setup.js'],
+  // Serial by necessity: the *.db.test.ts suites truncate a single shared test
+  // database, so parallel workers would wipe each other's fixtures mid-test.
+  // The alternative (a database per JEST_WORKER_ID) buys parallelism the suite
+  // is far too small to need — it runs in seconds against local Postgres.
+  maxWorkers: 1,
   // Provisions the local test schema once per run (prisma db push --force-reset).
   globalSetup: '<rootDir>/jest.globalSetup.js',
   clearMocks: true,

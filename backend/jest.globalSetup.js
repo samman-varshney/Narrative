@@ -29,4 +29,13 @@ module.exports = async () => {
     cwd: __dirname,
     stdio: ['ignore', 'ignore', 'inherit'], // quiet on success, loud on failure
   });
+
+  // Partial indexes live outside the Prisma schema, so `db push` never creates
+  // them. Applied here too, or tests would exercise a different index set than
+  // production — exactly the kind of drift that hides a slow query until deploy.
+  execSync('npx tsx scripts/apply-raw-indexes.ts', {
+    cwd: __dirname,
+    env: { ...process.env, DATABASE_URL: url },
+    stdio: ['ignore', 'ignore', 'inherit'],
+  });
 };
