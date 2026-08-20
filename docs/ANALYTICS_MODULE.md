@@ -44,7 +44,7 @@ broker and nothing else.
 src/modules/analytics/
 ├── analytics.types.ts        # the module's vocabulary — no Redis/SQL in here
 ├── analytics.keys.ts         # every Redis key, in one file
-├── analytics.time.ts         # UTC day bucketing
+├── analytics.time.ts         # reporting-day bucketing; instant-vs-label split
 ├── analytics.buffer.ts       # Redis counters + the atomic Lua drain
 ├── analytics.resolver.ts     # cached blog → { author, reading time }
 ├── analytics.cache.ts        # report cache, per-owner generations
@@ -379,6 +379,30 @@ which is well inside what "unique readers" means to an author.
 This makes `uniqueViews` the one **absolute** column: it is the day-to-date count,
 written with `GREATEST(stored, incoming)` rather than added — which also makes it
 idempotent by construction.
+
+#### `uniqueViews` vs `uniqueReaderDays`
+
+There is one sketch **per blog per day**, and two days' counts cannot be added: a
+reader who came back on Tuesday sits in both, and summing counts them twice. Only
+merging the sketches themselves would give a true period figure, and they do not
+outlive the flush.
+
+So the API reports two different things under two different names:
+
+| Field | Meaning | Availability |
+|---|---|---|
+| `uniqueReaderDays` | Σ over days of (distinct readers that day). Unit is reader-days: one reader on three days is 3. | always |
+| `uniqueViews` | Distinct readers, full stop. | **only when the window is one day**, `null` otherwise |
+
+`uniqueReaderDays` is a real engagement measure and a hard upper bound on
+uniques, so nothing is lost by reporting it — what changes is that it is no
+longer reported under a name that claims to be something else. The `null` is the
+point: a 30-day dashboard used to show a figure inflated by every returning
+reader, silently and in the flattering direction. A field that is absent when it
+cannot be computed is the only version a caller cannot misread.
+
+Ranking (`/me/top-blogs`) uses `uniqueReaderDays` for the same reason — ranking is
+inherently over a range, so there is no per-day figure to rank on.
 
 ### Identity hashing
 
@@ -743,8 +767,13 @@ that no longer exists.
 | `GET` | `/api/v1/analytics/blogs/:blogId/reading` | reading stats + the post's estimate |
 | `POST` | `/api/v1/analytics/blogs/:blogId/read` | reading telemetry (**public**, `202`) |
 
-`/me/top-blogs` also accepts `metric` (`views` \| `uniqueViews` \| `bookmarks` \|
-`comments` \| `readCompletions`), `limit` (≤50) and `cursor`.
+`/me/top-blogs` also accepts `metric` (`views` \| `uniqueReaderDays` \|
+`bookmarks` \| `comments` \| `readCompletions`), `limit` (≤50) and `cursor`.
+
+Every response carrying view counts returns **both** `uniqueReaderDays` and
+`uniqueViews`, where `uniqueViews` is `null` unless the window is a single
+day — `granularity=day` for a series, `startDate == endDate` for a total. See
+§6 for why.
 
 ### Example
 
@@ -757,8 +786,8 @@ GET /api/v1/analytics/me/views?startDate=2026-08-01&endDate=2026-08-20&granulari
   "success": true,
   "data": {
     "points": [
-      { "date": "2026-08-01", "views": 120, "uniqueViews": 98 },
-      { "date": "2026-08-02", "views": 143, "uniqueViews": 121 }
+      { "date": "2026-08-01", "views": 120, "uniqueReaderDays": 98, "uniqueViews": 98 },
+      { "date": "2026-08-02", "views": 143, "uniqueReaderDays": 121, "uniqueViews": 121 }
     ]
   },
   "meta": {
@@ -1070,6 +1099,18 @@ Notable cases worth knowing about:
 | `ANALYTICS_VIEW_DEDUPE_SECONDS` | `1800` | view dedupe window |
 | `ANALYTICS_DAILY_RETENTION_DAYS` | `400` | aggregate retention **and** API lookback limit |
 | `ANALYTICS_ID_SALT` | dev default | identity hashing; **required in production** |
+| `ANALYTICS_REPORTING_UTC_OFFSET_MINUTES` | `0` | the day boundary analytics buckets by, in minutes east of UTC |
+
+`ANALYTICS_REPORTING_UTC_OFFSET_MINUTES` is a **deploy-once** setting. It decides
+which instant starts a calendar day (IST = `330`, JST = `540`, US Pacific =
+`-480`), and that decision is made at ingest — so changing it after data exists
+does not re-slice history, and the days either side of the change are cut
+differently. Default `0` is plain UTC.
+
+It is a fixed **offset**, deliberately not an IANA zone name: a DST-observing zone
+produces a 23-hour and a 25-hour day each year plus an ambiguous hour belonging to
+two buckets, and for a counter whose entire value is comparability, two irregular
+days a year is a worse defect than a boundary an hour off for part of the year.
 
 All optional with defaults: analytics must never be the reason a deployment fails
 to boot. The one exception is `ANALYTICS_ID_SALT`, refused at its default in
@@ -1082,20 +1123,26 @@ privacy but provides none is worse than no setting at all.
 
 Each is a deliberate V1 boundary with a named path forward.
 
-1. **`uniqueViews` at week/month granularity is the sum of daily uniques** — i.e.
-   *unique daily readers*, not unique readers across the period. A reader who
-   visits on three days counts three times. True period-uniques need weekly and
-   monthly HyperLogLogs (roughly 3× the HLL keys). The daily figure is exact in
-   meaning; the coarser ones are a defensible upper bound.
+1. **Period-unique readers are not computed** — only reported when the window is
+   a single day. Above that the API returns `uniqueReaderDays` (Σ of daily
+   uniques) and `uniqueViews: null` rather than a summed figure passing itself
+   off as distinct readers (§6). True period-uniques need the daily sketches
+   persisted (they are plain Redis strings, so a `bytea` column would hold them)
+   and `PFMERGE`d at query time — which would answer *any* range, not just
+   calendar weeks and months, at the cost of putting Redis on the read path.
 
 2. **Unique views are approximate** (~0.81% standard error), inherent to
    HyperLogLog. Exactness would cost unbounded memory per blog per day.
 
-3. **Everything is bucketed in UTC.** An author in Tokyo sees evening traffic split
-   across two rows. Per-author timezones cannot work at the buffer — a bucket is
-   fixed at ingest time, before anyone has asked who is looking. Because the grain
-   is a day, timezone-aware reporting can be added later as a *query-side*
-   `date_trunc(..., timezone)` feature with no re-ingest.
+3. **One reporting day boundary for the whole platform, not per author.**
+   `ANALYTICS_REPORTING_UTC_OFFSET_MINUTES` moves the boundary to the audience the
+   numbers are for, which is the 90% of the problem — UTC is only a quiet hour for
+   roughly UTC±3. What it does not give is a *per-author* boundary, and that is
+   not a query-side feature: a daily grain cannot be re-sliced into a different
+   day, because the new boundary falls mid-bucket. Per-author timezones require
+   **hourly** grain at ingest (24× rows, then
+   `date_trunc('day', ts AT TIME ZONE tz)`), which would also make hourly traffic
+   charts possible.
 
 4. **A view spanning midnight is not re-counted.** The dedupe window is
    session-shaped and does not reset at the day boundary, so a reader active at
@@ -1164,7 +1211,9 @@ What each future step actually costs:
 | Likes | one event, one column, one DTO field |
 | Real-time counters | read the Redis buffer alongside PostgreSQL in the service |
 | Geo / device / referrer | new columns + `AnalyticsEventMetadata` variants; the ingestion pipeline is unchanged |
-| Per-author timezones | query-side `date_trunc(..., tz)`; daily grain already supports it |
+| Platform-wide day boundary | already available: `ANALYTICS_REPORTING_UTC_OFFSET_MINUTES` |
+| Per-author timezones | **hourly** grain at ingest, then `date_trunc('day', ts AT TIME ZONE tz)`; a daily grain cannot be re-sliced |
+| True period-unique readers | persist the daily HLL sketch (`bytea`) and `PFMERGE` at query time |
 
 None of these require touching a domain module, because no domain module knows
 anything about analytics beyond emitting an event it would emit anyway.
@@ -1191,8 +1240,10 @@ module without a wider change:
 2. No transactional outbox on the event bus — a crash between commit and enqueue
    loses an event. Pre-existing and already documented in `eventBus.ts`; it caps
    the accuracy of *every* event-driven module, not just this one.
-3. Period-unique readers need weekly/monthly HyperLogLogs.
-4. UTC-only bucketing; per-author timezones are a query-side feature not yet built.
+3. Period-unique readers are reported honestly (`null` above one day) rather than
+   computed; computing them needs persisted sketches and a query-time `PFMERGE`.
+4. One platform-wide day boundary; per-author timezones need hourly grain at
+   ingest, not a query-side change.
 
 ---
 

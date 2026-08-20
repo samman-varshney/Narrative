@@ -11,6 +11,7 @@ import {
 import { blogBufferKey, uniqueViewersKey, userBufferKey } from '../analytics.keys';
 import type { AnalyticsEvent } from '../analytics.types';
 import { clearAnalyticsKeys } from './helpers';
+import { reportingDateKey } from '../analytics.time';
 
 /**
  * Ingestion behaviour against a REAL Redis.
@@ -28,7 +29,10 @@ import { clearAnalyticsKeys } from './helpers';
 const BLOG_ID = 'blog-ingest-1';
 const AUTHOR_ID = 'author-ingest-1';
 const READER_ID = 'reader-ingest-1';
-const TODAY = new Date().toISOString().slice(0, 10);
+// Derived through the module's own helper, not a raw UTC slice: the bucket a
+// view lands in follows `ANALYTICS_REPORTING_UTC_OFFSET_MINUTES`, so hardcoding
+// UTC here would make every assertion below wrong for any operator who sets it.
+const TODAY = reportingDateKey(new Date());
 
 /** A resolver that answers from a fixture instead of the database. */
 class StubResolver extends AnalyticsBlogResolver {

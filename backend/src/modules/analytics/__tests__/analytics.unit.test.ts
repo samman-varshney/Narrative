@@ -14,11 +14,15 @@ import {
   viewerIdentity,
 } from '../analytics.keys';
 import {
+  bucketsAreSingleDays,
+  dateKey,
   estimateBucketCount,
   inclusiveDayCount,
-  parseUtcDateKey,
-  utcDateKey,
-  utcDaysAgo,
+  parseDateKey,
+  rangeIsSingleDay,
+  reportingDateKey,
+  reportingDaysAgo,
+  startOfReportingDay,
 } from '../analytics.time';
 import { MAX_BUCKETS, MAX_LOOKBACK_DAYS, readTelemetrySchema } from '../analytics.validator';
 
@@ -35,20 +39,20 @@ import { MAX_BUCKETS, MAX_LOOKBACK_DAYS, readTelemetrySchema } from '../analytic
 const NOW = new Date('2026-08-20T14:30:00.000Z');
 
 describe('analytics time helpers', () => {
-  it('buckets a timestamp by its UTC day, not the local one', () => {
-    // 23:30 UTC-adjacent times are where a local-time implementation silently
-    // files a view under the wrong day.
-    expect(utcDateKey(new Date('2026-08-20T23:59:59.999Z'))).toBe('2026-08-20');
-    expect(utcDateKey(new Date('2026-08-21T00:00:00.000Z'))).toBe('2026-08-21');
+  it('buckets a timestamp by its reporting day, not the local one', () => {
+    // Times adjacent to the boundary are where a local-time implementation
+    // silently files a view under the wrong day.
+    expect(reportingDateKey(new Date('2026-08-20T23:59:59.999Z'), 0)).toBe('2026-08-20');
+    expect(reportingDateKey(new Date('2026-08-21T00:00:00.000Z'), 0)).toBe('2026-08-21');
   });
 
   it('rejects a date that looks valid but does not exist', () => {
     // `new Date('2026-02-31')` rolls forward to March 3 rather than failing, so
     // a regex-only check would accept it and silently shift the range.
-    expect(parseUtcDateKey('2026-02-31')).toBeNull();
-    expect(parseUtcDateKey('2026-13-01')).toBeNull();
-    expect(parseUtcDateKey('not-a-date')).toBeNull();
-    expect(parseUtcDateKey('2026-02-28')).toEqual(new Date('2026-02-28T00:00:00.000Z'));
+    expect(parseDateKey('2026-02-31')).toBeNull();
+    expect(parseDateKey('2026-13-01')).toBeNull();
+    expect(parseDateKey('not-a-date')).toBeNull();
+    expect(parseDateKey('2026-02-28')).toEqual(new Date('2026-02-28T00:00:00.000Z'));
   });
 
   it('counts days inclusively at both ends', () => {
@@ -67,9 +71,120 @@ describe('analytics time helpers', () => {
     expect(estimateBucketCount(start, end, 'month')).toBeGreaterThanOrEqual(12);
   });
 
-  it('walks back whole UTC days regardless of the time of day', () => {
-    expect(utcDateKey(utcDaysAgo(0, NOW))).toBe('2026-08-20');
-    expect(utcDateKey(utcDaysAgo(30, NOW))).toBe('2026-07-21');
+  it('walks back whole reporting days regardless of the time of day', () => {
+    expect(dateKey(reportingDaysAgo(0, NOW, 0))).toBe('2026-08-20');
+    expect(dateKey(reportingDaysAgo(30, NOW, 0))).toBe('2026-07-21');
+  });
+});
+
+describe('reporting timezone offset', () => {
+  const IST = 330; // UTC+5:30
+  const PACIFIC = -480; // UTC-8
+
+  it('files an evening view in the local day, not the next UTC one', () => {
+    // 19:00 Tokyo on the 20th is 10:00 UTC on the 20th — fine either way. The
+    // case that breaks under UTC is 23:00 Tokyo: 14:00 UTC, still the 20th in
+    // UTC but already the 21st locally at +9.
+    const evening = new Date('2026-08-20T16:00:00.000Z');
+    expect(reportingDateKey(evening, 0)).toBe('2026-08-20');
+    expect(reportingDateKey(evening, 540)).toBe('2026-08-21');
+  });
+
+  it('files a pre-dawn view in the previous local day at a negative offset', () => {
+    // 02:00 UTC on the 21st is 18:00 Pacific on the 20th — the evening peak
+    // that UTC bucketing files under tomorrow.
+    const preDawn = new Date('2026-08-21T02:00:00.000Z');
+    expect(reportingDateKey(preDawn, 0)).toBe('2026-08-21');
+    expect(reportingDateKey(preDawn, PACIFIC)).toBe('2026-08-20');
+  });
+
+  it('moves "today" for default ranges too', () => {
+    // 20:00 UTC is already the 21st in IST, so an author's default window must
+    // end on the 21st — otherwise the dashboard omits the day they are in.
+    const evening = new Date('2026-08-20T20:00:00.000Z');
+    expect(dateKey(startOfReportingDay(evening, 0))).toBe('2026-08-20');
+    expect(dateKey(startOfReportingDay(evening, IST))).toBe('2026-08-21');
+  });
+
+  it('keeps every reporting day exactly 24 hours long', () => {
+    // The reason this is a fixed offset and not an IANA zone: no 23- or
+    // 25-hour days, so day-over-day comparisons stay meaningful.
+    const start = startOfReportingDay(new Date('2026-03-08T12:00:00.000Z'), PACIFIC);
+    const next = startOfReportingDay(new Date('2026-03-09T12:00:00.000Z'), PACIFIC);
+    expect(next.getTime() - start.getTime()).toBe(24 * 60 * 60 * 1000);
+  });
+
+  it('formats a resolved bound without re-applying the offset', () => {
+    // The double-shift guard. `dateKey` takes a LABEL; feeding it an offset
+    // would slide every range bound by a day at IST.
+    const label = startOfReportingDay(new Date('2026-08-20T20:00:00.000Z'), IST);
+    expect(dateKey(label)).toBe('2026-08-21');
+    expect(dateKey(label)).toBe(dateKey(label));
+  });
+});
+
+/**
+ * The wiring, not the arithmetic.
+ *
+ * The helpers above are tested with an explicit offset, which proves the maths
+ * but not that anything reads the setting. This reloads the module graph with a
+ * real environment variable set and checks the value actually reaches both
+ * places a day boundary is decided: the bucket a view is filed under, and the
+ * default reporting window. A helper nobody calls is the likelier failure here.
+ */
+describe('reporting offset wiring', () => {
+  const ORIGINAL = process.env.ANALYTICS_REPORTING_UTC_OFFSET_MINUTES;
+
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.ANALYTICS_REPORTING_UTC_OFFSET_MINUTES;
+    else process.env.ANALYTICS_REPORTING_UTC_OFFSET_MINUTES = ORIGINAL;
+    jest.resetModules();
+  });
+
+  it('reads the configured offset and applies it to both bucketing and defaults', () => {
+    process.env.ANALYTICS_REPORTING_UTC_OFFSET_MINUTES = '330'; // IST
+
+    jest.isolateModules(() => {
+      const time = require('../analytics.time');
+      const ranges = require('../analytics.range');
+
+      expect(time.REPORTING_OFFSET_MINUTES).toBe(330);
+
+      // 20:00 UTC on the 20th is 01:30 on the 21st in IST.
+      const evening = new Date('2026-08-20T20:00:00.000Z');
+      expect(time.reportingDateKey(evening)).toBe('2026-08-21');
+
+      // ...and the default window must end on that same day, or the dashboard
+      // silently omits the day the author is standing in.
+      const range = ranges.resolveDateRange({ granularity: 'day' }, evening);
+      expect(time.dateKey(range.endDate)).toBe('2026-08-21');
+    });
+  });
+
+  it('defaults to UTC when the variable is unset', () => {
+    delete process.env.ANALYTICS_REPORTING_UTC_OFFSET_MINUTES;
+
+    jest.isolateModules(() => {
+      const time = require('../analytics.time');
+      expect(time.REPORTING_OFFSET_MINUTES).toBe(0);
+      expect(time.reportingDateKey(new Date('2026-08-20T20:00:00.000Z'))).toBe('2026-08-20');
+    });
+  });
+});
+
+describe('exact-unique eligibility', () => {
+  it('allows an exact unique count only when a bucket is one day', () => {
+    expect(bucketsAreSingleDays('day')).toBe(true);
+    expect(bucketsAreSingleDays('week')).toBe(false);
+    expect(bucketsAreSingleDays('month')).toBe(false);
+  });
+
+  it('allows an exact unique count only when a range is one day', () => {
+    const day = new Date('2026-08-20T00:00:00.000Z');
+    expect(rangeIsSingleDay({ startDate: day, endDate: day })).toBe(true);
+    expect(
+      rangeIsSingleDay({ startDate: day, endDate: new Date('2026-08-21T00:00:00.000Z') })
+    ).toBe(false);
   });
 });
 
@@ -82,8 +197,8 @@ describe('resolveDateRange', () => {
   it('defaults to the last 30 days, inclusive of today', () => {
     const range = resolveDateRange(query(), NOW);
 
-    expect(utcDateKey(range.startDate)).toBe('2026-07-22');
-    expect(utcDateKey(range.endDate)).toBe('2026-08-20');
+    expect(dateKey(range.startDate)).toBe('2026-07-22');
+    expect(dateKey(range.endDate)).toBe('2026-08-20');
     expect(inclusiveDayCount(range.startDate, range.endDate)).toBe(30);
   });
 
@@ -93,8 +208,8 @@ describe('resolveDateRange', () => {
       NOW
     );
 
-    expect(utcDateKey(range.startDate)).toBe('2026-08-01');
-    expect(utcDateKey(range.endDate)).toBe('2026-08-10');
+    expect(dateKey(range.startDate)).toBe('2026-08-01');
+    expect(dateKey(range.endDate)).toBe('2026-08-10');
   });
 
   it('rejects a reversed range', () => {
@@ -111,7 +226,7 @@ describe('resolveDateRange', () => {
       NOW
     );
 
-    expect(utcDateKey(range.endDate)).toBe('2026-08-20');
+    expect(dateKey(range.endDate)).toBe('2026-08-20');
   });
 
   it('rejects a range that would produce more than MAX_BUCKETS points', () => {
@@ -154,7 +269,7 @@ describe('resolveDateRange', () => {
   });
 
   it('rejects a start date older than the retention window', () => {
-    const tooOld = utcDateKey(utcDaysAgo(MAX_LOOKBACK_DAYS + 10, NOW));
+    const tooOld = dateKey(reportingDaysAgo(MAX_LOOKBACK_DAYS + 10, NOW));
 
     let thrown: AppError | undefined;
     try {
@@ -179,12 +294,12 @@ describe('resolveTotalsRange', () => {
     // query does not deserve.
     const range = resolveTotalsRange({ startDate: '2025-08-01', endDate: '2026-08-20' }, NOW);
 
-    expect(utcDateKey(range.startDate)).toBe('2025-08-01');
-    expect(utcDateKey(range.endDate)).toBe('2026-08-20');
+    expect(dateKey(range.startDate)).toBe('2025-08-01');
+    expect(dateKey(range.endDate)).toBe('2026-08-20');
   });
 
   it('still enforces the retention bound', () => {
-    const tooOld = utcDateKey(utcDaysAgo(MAX_LOOKBACK_DAYS + 10, NOW));
+    const tooOld = dateKey(reportingDaysAgo(MAX_LOOKBACK_DAYS + 10, NOW));
 
     // That one is about data that no longer exists, so it applies everywhere.
     expect(() => resolveTotalsRange({ startDate: tooOld }, NOW)).toThrow(AppError);
@@ -199,8 +314,8 @@ describe('resolveTotalsRange', () => {
   it('defaults to the same 30-day window', () => {
     const range = resolveTotalsRange({}, NOW);
 
-    expect(utcDateKey(range.startDate)).toBe('2026-07-22');
-    expect(utcDateKey(range.endDate)).toBe('2026-08-20');
+    expect(dateKey(range.startDate)).toBe('2026-07-22');
+    expect(dateKey(range.endDate)).toBe('2026-08-20');
   });
 });
 

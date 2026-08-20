@@ -65,6 +65,38 @@ const envSchema = z
      * dedupe windows (readers can be counted once more) and nothing else.
      */
     ANALYTICS_ID_SALT: z.string().min(8).default('narrative-analytics-dev-salt'),
+
+    /**
+     * The calendar day analytics buckets by, as a fixed offset from UTC in
+     * minutes (IST = 330, JST = 540, US Pacific = -480).
+     *
+     * A "day" has to mean one thing for a metric to be comparable across a
+     * range, and that meaning is fixed at INGEST — a view increments a bucket
+     * long before anyone asks who is looking, so per-author timezones cannot
+     * work here. What this setting buys is choosing WHICH day boundary the
+     * platform uses instead of being stuck with UTC's.
+     *
+     * That matters more than it sounds. UTC midnight is only a quiet hour for
+     * roughly UTC±3: at +9 it falls at 09:00 and cuts the working morning in
+     * half, at -8 it falls at 16:00 and splits the evening peak. Set this to the
+     * offset of the audience the numbers are for.
+     *
+     * A fixed OFFSET, deliberately not an IANA zone name. A DST-observing zone
+     * produces a 23-hour and a 25-hour day each year, and an ambiguous hour that
+     * belongs to two buckets — for a counter whose whole value is
+     * comparability, two irregular days a year is a worse defect than a boundary
+     * an hour off for part of the year.
+     *
+     * OPERATIONAL: this is a deploy-once setting. Changing it after data exists
+     * does not re-slice history — old rows keep the boundary they were written
+     * with, so the days either side of the change are cut differently.
+     */
+    ANALYTICS_REPORTING_UTC_OFFSET_MINUTES: z.coerce
+      .number()
+      .int()
+      .min(-840)
+      .max(840)
+      .default(0),
   })
   .superRefine((data, ctx) => {
     // Resend needs a key only when it is the active transport.

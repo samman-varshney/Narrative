@@ -136,7 +136,7 @@ export interface IngestionResult {
 export interface BlogDailyDelta {
   blogId: string;
   authorId: string;
-  /** UTC calendar day, `YYYY-MM-DD`. */
+  /** Reporting calendar day, `YYYY-MM-DD`. See `analytics.time`. */
   date: string;
   views: number;
   uniqueViews: number;
@@ -167,19 +167,54 @@ export interface UserDailyDelta {
  */
 export type Granularity = 'day' | 'week' | 'month';
 
-/** A validated, normalized reporting window. Always UTC, always inclusive. */
+/**
+ * A validated, normalized reporting window. Always inclusive, and always on the
+ * reporting calendar (`ANALYTICS_REPORTING_UTC_OFFSET_MINUTES`). The bounds are
+ * date LABELS carried as midnight UTC — see `analytics.time`.
+ */
 export interface DateRange {
   readonly startDate: Date;
   readonly endDate: Date;
   readonly granularity: Granularity;
 }
 
+/**
+ * ── `uniqueViews` vs `uniqueReaderDays` ─────────────────────────────────────
+ *
+ * Distinct readers are counted with one HyperLogLog per blog per DAY. Two days'
+ * counts cannot be combined: a reader who came back on Tuesday is in both
+ * sketches, and adding them counts them twice. Only merging the sketches
+ * themselves would give a true period figure, and the sketches do not outlive
+ * the flush.
+ *
+ * So the module reports two different things and names them differently:
+ *
+ *   uniqueReaderDays — Σ over days of (distinct readers that day). Always
+ *                      available, always exact for what it is. The unit is
+ *                      reader-days: one reader on three days is 3. A real
+ *                      engagement measure, and a hard upper bound on uniques.
+ *   uniqueViews      — distinct readers, full stop. Reportable ONLY when the
+ *                      window is a single day, `null` otherwise.
+ *
+ * The `null` is the point. The previous shape returned `uniqueReaderDays` under
+ * the name `uniqueViews`, so a 30-day dashboard showed a number inflated by
+ * every returning reader — silently, and in the flattering direction. A field
+ * that is absent when it cannot be computed is the only version of this a
+ * caller cannot misread.
+ *
+ * True period-uniques need the daily sketches persisted and `PFMERGE`d at query
+ * time. See ANALYTICS_MODULE.md § "Known limitations".
+ */
+
 /** One point in a views time series. */
 export interface ViewsPoint {
   /** Bucket start, `YYYY-MM-DD`. */
   date: string;
   views: number;
-  uniqueViews: number;
+  /** Σ of daily unique readers in the bucket. */
+  uniqueReaderDays: number;
+  /** Exact distinct readers. Non-null only at `granularity=day`. */
+  uniqueViews: number | null;
 }
 
 /** One point in an engagement time series. */
@@ -222,7 +257,10 @@ export interface BlogOverviewDTO {
   publishedAt: string | null;
   range: { startDate: string; endDate: string };
   views: number;
-  uniqueViews: number;
+  /** Σ of daily unique readers across the range. */
+  uniqueReaderDays: number;
+  /** Exact distinct readers. Non-null only when the range is one day. */
+  uniqueViews: number | null;
   bookmarks: number;
   netBookmarks: number;
   comments: number;
@@ -241,7 +279,10 @@ export interface UserOverviewDTO {
   followers: number;
   /** Range-scoped, from the daily aggregates. */
   views: number;
-  uniqueViews: number;
+  /** Σ of daily unique readers across the range. */
+  uniqueReaderDays: number;
+  /** Exact distinct readers. Non-null only when the range is one day. */
+  uniqueViews: number | null;
   bookmarks: number;
   netBookmarks: number;
   comments: number;
@@ -258,12 +299,27 @@ export interface TopBlogDTO {
   slug: string;
   publishedAt: string | null;
   views: number;
-  uniqueViews: number;
+  /** Σ of daily unique readers across the range. */
+  uniqueReaderDays: number;
+  /** Exact distinct readers. Non-null only when the range is one day. */
+  uniqueViews: number | null;
   netBookmarks: number;
   comments: number;
   /** The value of the metric this list was ranked by. */
   metricValue: number;
 }
 
-/** Metrics a top-blogs list can be ranked by. */
-export type TopBlogsMetric = 'views' | 'uniqueViews' | 'bookmarks' | 'comments' | 'readCompletions';
+/**
+ * Metrics a top-blogs list can be ranked by.
+ *
+ * `uniqueReaderDays` rather than `uniqueViews`, because ranking is inherently
+ * over the whole range: there is no per-day number to rank by. Offering
+ * `uniqueViews` here would mean ranking on a figure that is only defined for a
+ * one-day window.
+ */
+export type TopBlogsMetric =
+  | 'views'
+  | 'uniqueReaderDays'
+  | 'bookmarks'
+  | 'comments'
+  | 'readCompletions';

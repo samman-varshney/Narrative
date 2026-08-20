@@ -92,7 +92,7 @@ describe('AnalyticsRepository (real database)', () => {
       // promise a number and deliver null.
       expect(totals).toEqual({
         views: 0,
-        uniqueViews: 0,
+        uniqueReaderDays: 0,
         readStarts: 0,
         readCompletions: 0,
         totalReadingSeconds: 0,
@@ -275,6 +275,43 @@ describe('AnalyticsRepository (real database)', () => {
         10
       );
       expect(byComments.map((r) => r.metricValue)).toEqual([9, 5, 1]);
+    });
+
+    it('ranks by uniqueReaderDays against the real database', async () => {
+      // The metric enum and the SQL fragment table are keyed by the same
+      // string. A mismatch yields `undefined` where a `Prisma.Sql` belongs and
+      // fails only at query time, so this needs a real database to catch.
+      await store.upsertBlogDaily([
+        daily({ blogId: blogIds[0]!, authorId, date: '2026-08-02', uniqueViews: 4 }),
+        daily({ blogId: blogIds[1]!, authorId, date: '2026-08-02', uniqueViews: 11 }),
+      ]);
+
+      const ranked = await analyticsRepository.getTopBlogs(
+        authorId,
+        range('2026-08-01', '2026-08-31'),
+        'uniqueReaderDays',
+        10
+      );
+
+      expect(ranked[0]?.blogId).toBe(blogIds[1]);
+      expect(ranked[0]?.metricValue).toBe(11);
+    });
+
+    it('sums uniqueReaderDays across days rather than deduplicating readers', async () => {
+      // The documented semantics, pinned. The same reader on two days is two
+      // reader-days; there is no sketch left to merge, so this is an upper
+      // bound on distinct readers and is named accordingly.
+      await store.upsertBlogDaily([
+        daily({ blogId: blogIds[0]!, authorId, date: '2026-08-02', uniqueViews: 5 }),
+        daily({ blogId: blogIds[0]!, authorId, date: '2026-08-03', uniqueViews: 5 }),
+      ]);
+
+      const totals = await analyticsRepository.getBlogTotals(
+        blogIds[0]!,
+        range('2026-08-01', '2026-08-31')
+      );
+
+      expect(totals.uniqueReaderDays).toBe(10);
     });
 
     it('returns limit + 1 rows so the caller can derive hasNextPage', async () => {

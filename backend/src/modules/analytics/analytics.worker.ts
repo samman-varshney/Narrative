@@ -10,6 +10,7 @@ import {
 import { bumpGenerations } from './analytics.cache';
 import { analyticsStore } from './store/PostgresAnalyticsStore';
 import type { IAnalyticsStore } from './store/IAnalyticsStore';
+import { dateKey, reportingDaysAgo } from './analytics.time';
 import type { BlogDailyDelta, UserDailyDelta } from './analytics.types';
 
 /**
@@ -182,14 +183,17 @@ function partition(buckets: DrainedBucket[]): {
 export async function runPrune(
   store: IAnalyticsStore = analyticsStore
 ): Promise<{ blogRows: number; userRows: number }> {
-  const cutoff = new Date();
-  cutoff.setUTCDate(cutoff.getUTCDate() - env.ANALYTICS_DAILY_RETENTION_DAYS);
+  // Derived through the same reporting-day helper the API's lookback bound uses.
+  // Computing the cutoff straight from `new Date()` would put the two on
+  // different calendars at a non-zero offset, and the prune would start deleting
+  // a day the API still advertises as queryable.
+  const cutoff = reportingDaysAgo(env.ANALYTICS_DAILY_RETENTION_DAYS);
 
   const result = await store.pruneBefore(cutoff, PRUNE_BATCH_SIZE);
 
   if (result.blogRows > 0 || result.userRows > 0) {
     logger.info(
-      { ...result, cutoff: cutoff.toISOString().slice(0, 10) },
+      { ...result, cutoff: dateKey(cutoff) },
       'analytics: pruned expired aggregate rows'
     );
   }

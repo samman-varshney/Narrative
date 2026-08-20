@@ -13,7 +13,7 @@ import {
   viewDedupeKey,
   viewerIdentity,
 } from '../analytics.keys';
-import { utcDateKey } from '../analytics.time';
+import { reportingDateKey } from '../analytics.time';
 import type { AnalyticsEvent, IngestionResult } from '../analytics.types';
 import type { IAnalyticsIngestionService } from './IAnalyticsIngestionService';
 
@@ -206,7 +206,7 @@ export class RedisAnalyticsIngestionService implements IAnalyticsIngestionServic
     }
 
     const identity = viewerIdentity(event);
-    const date = utcDateKey(event.occurredAt);
+    const date = reportingDateKey(event.occurredAt);
 
     // No identity at all: an anonymous client that sent no id. The view is real
     // and is counted, but it cannot be deduplicated or attributed to a distinct
@@ -276,7 +276,7 @@ export class RedisAnalyticsIngestionService implements IAnalyticsIngestionServic
       READ_SESSION_TTL_SECONDS
     );
 
-    await this.buffer.incrementBlog(event.entityId, ownerId, utcDateKey(event.occurredAt), {
+    await this.buffer.incrementBlog(event.entityId, ownerId, reportingDateKey(event.occurredAt), {
       readStarts: 1,
     });
 
@@ -320,7 +320,7 @@ export class RedisAnalyticsIngestionService implements IAnalyticsIngestionServic
       return { outcome: 'invalid', reason: 'implausible reading duration' };
     }
 
-    await this.buffer.incrementBlog(event.entityId, ownerId, utcDateKey(event.occurredAt), {
+    await this.buffer.incrementBlog(event.entityId, ownerId, reportingDateKey(event.occurredAt), {
       readCompletions: 1,
       totalReadingSeconds: duration,
     });
@@ -424,7 +424,7 @@ export class RedisAnalyticsIngestionService implements IAnalyticsIngestionServic
       return { outcome: 'self-action', reason: `author ${field} on own blog` };
     }
 
-    await this.buffer.incrementBlog(event.entityId, ownerId, utcDateKey(event.occurredAt), {
+    await this.buffer.incrementBlog(event.entityId, ownerId, reportingDateKey(event.occurredAt), {
       [field]: 1,
     });
     return { outcome: 'recorded' };
@@ -434,7 +434,7 @@ export class RedisAnalyticsIngestionService implements IAnalyticsIngestionServic
     event: AnalyticsEvent,
     field: 'followersGained' | 'followersLost' | 'blogsPublished'
   ): Promise<IngestionResult> {
-    await this.buffer.incrementUser(event.entityId, utcDateKey(event.occurredAt), {
+    await this.buffer.incrementUser(event.entityId, reportingDateKey(event.occurredAt), {
       [field]: 1,
     });
     return { outcome: 'recorded' };

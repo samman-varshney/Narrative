@@ -102,7 +102,11 @@ describe('analytics end-to-end (no mocks)', () => {
 
       expect(overview.status).toBe(200);
       expect(overview.body.data.overview.views).toBe(1);
-      expect(overview.body.data.overview.uniqueViews).toBe(1);
+      // The default range is 30 days, so the exact unique count is not
+      // reportable — only the reader-day total is. See the single-day test
+      // below for the case where both are available.
+      expect(overview.body.data.overview.uniqueReaderDays).toBe(1);
+      expect(overview.body.data.overview.uniqueViews).toBeNull();
     });
 
     it('counts a signed-in read', async () => {
@@ -159,7 +163,26 @@ describe('analytics end-to-end (no mocks)', () => {
         .set(auth(authorToken));
 
       expect(overview.body.data.overview.views).toBe(3);
-      expect(overview.body.data.overview.uniqueViews).toBe(3);
+      expect(overview.body.data.overview.uniqueReaderDays).toBe(3);
+      expect(overview.body.data.overview.uniqueViews).toBeNull();
+    });
+
+    it('reports an exact unique-reader count when the range is a single day', async () => {
+      for (const id of ['anon-ddddddddddddddd', 'anon-eeeeeeeeeeeeeee']) {
+        await request(app).get(`/api/v1/blogs/${blog.slug}`).set('x-anonymous-id', id);
+      }
+      await flush();
+
+      const today = new Date().toISOString().slice(0, 10);
+      const overview = await request(app)
+        .get(`/api/v1/analytics/blogs/${blog.id}/overview`)
+        .query({ startDate: today, endDate: today })
+        .set(auth(authorToken));
+
+      // One day means one HyperLogLog, so the two figures coincide — and
+      // `uniqueViews` is present rather than null.
+      expect(overview.body.data.overview.uniqueReaderDays).toBe(2);
+      expect(overview.body.data.overview.uniqueViews).toBe(2);
     });
 
     it('does not count a read of an unpublished blog', async () => {
@@ -192,7 +215,7 @@ describe('analytics end-to-end (no mocks)', () => {
 
       // Counted (the read happened), but not attributable to a unique reader.
       expect(overview.body.data.overview.views).toBe(1);
-      expect(overview.body.data.overview.uniqueViews).toBe(0);
+      expect(overview.body.data.overview.uniqueReaderDays).toBe(0);
     });
   });
 
@@ -359,7 +382,13 @@ describe('analytics end-to-end (no mocks)', () => {
 
       expect(views.status).toBe(200);
       expect(views.body.data.points).toHaveLength(1);
-      expect(views.body.data.points[0]).toMatchObject({ views: 1, uniqueViews: 1 });
+      // Daily granularity: a bucket IS a day, so the exact count is reported
+      // alongside the reader-day total and the two agree.
+      expect(views.body.data.points[0]).toMatchObject({
+        views: 1,
+        uniqueReaderDays: 1,
+        uniqueViews: 1,
+      });
       // A plain calendar day, never a full ISO timestamp.
       expect(views.body.data.points[0].date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
 

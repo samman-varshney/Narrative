@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../core/database/prisma';
-import { utcDateKey } from './analytics.time';
+import { dateKey } from './analytics.time';
 import type { DateRange, Granularity, TopBlogsMetric } from './analytics.types';
 
 /**
@@ -54,7 +54,12 @@ function bucketExpression(granularity: Granularity): Prisma.Sql {
 export interface ViewsRow {
   date: Date;
   views: number;
-  uniqueViews: number;
+  /**
+   * Sum of per-day unique readers over the bucket. Equals the exact unique
+   * reader count only when the bucket IS one day — see `analytics.types` §
+   * `uniqueReaderDays` for why the two cannot be the same field.
+   */
+  uniqueReaderDays: number;
 }
 
 export interface EngagementRow {
@@ -75,7 +80,8 @@ export interface FollowerRow {
 /** Aggregate totals for one blog (or one author) over a range. */
 export interface AnalyticsTotals {
   views: number;
-  uniqueViews: number;
+  /** Sum of per-day unique readers across the range. Not period-uniques. */
+  uniqueReaderDays: number;
   readStarts: number;
   readCompletions: number;
   totalReadingSeconds: number;
@@ -97,7 +103,7 @@ export interface TopBlogRow {
   slug: string;
   publishedAt: Date | null;
   views: number;
-  uniqueViews: number;
+  uniqueReaderDays: number;
   netBookmarks: number;
   comments: number;
   readCompletions: number;
@@ -113,7 +119,7 @@ export interface TopBlogRow {
  */
 const TOP_BLOG_METRICS: Record<TopBlogsMetric, Prisma.Sql> = {
   views: Prisma.sql`COALESCE(SUM("views"), 0)::int`,
-  uniqueViews: Prisma.sql`COALESCE(SUM("uniqueViews"), 0)::int`,
+  uniqueReaderDays: Prisma.sql`COALESCE(SUM("uniqueViews"), 0)::int`,
   bookmarks: Prisma.sql`(COALESCE(SUM("bookmarks"), 0) - COALESCE(SUM("unbookmarks"), 0))::int`,
   comments: Prisma.sql`COALESCE(SUM("comments"), 0)::int`,
   readCompletions: Prisma.sql`COALESCE(SUM("readCompletions"), 0)::int`,
@@ -131,7 +137,7 @@ const TOP_BLOG_METRICS: Record<TopBlogsMetric, Prisma.Sql> = {
  */
 const TOTALS_COLUMNS = Prisma.sql`
   COALESCE(SUM("views"), 0)::int               AS "views",
-  COALESCE(SUM("uniqueViews"), 0)::int         AS "uniqueViews",
+  COALESCE(SUM("uniqueViews"), 0)::int         AS "uniqueReaderDays",
   COALESCE(SUM("readStarts"), 0)::int          AS "readStarts",
   COALESCE(SUM("readCompletions"), 0)::int     AS "readCompletions",
   COALESCE(SUM("totalReadingSeconds"), 0)::int AS "totalReadingSeconds",
@@ -142,7 +148,7 @@ const TOTALS_COLUMNS = Prisma.sql`
 
 const EMPTY_TOTALS: AnalyticsTotals = {
   views: 0,
-  uniqueViews: 0,
+  uniqueReaderDays: 0,
   readStarts: 0,
   readCompletions: 0,
   totalReadingSeconds: 0,
@@ -160,8 +166,8 @@ export class AnalyticsRepository {
       SELECT ${TOTALS_COLUMNS}
       FROM "BlogAnalyticsDaily"
       WHERE "blogId" = ${blogId}
-        AND "date" >= ${utcDateKey(range.startDate)}::date
-        AND "date" <= ${utcDateKey(range.endDate)}::date
+        AND "date" >= ${dateKey(range.startDate)}::date
+        AND "date" <= ${dateKey(range.endDate)}::date
     `;
     return rows[0] ?? EMPTY_TOTALS;
   }
@@ -178,11 +184,11 @@ export class AnalyticsRepository {
     return prisma.$queryRaw<ViewsRow[]>`
       SELECT ${bucketExpression(range.granularity)}      AS "date",
              COALESCE(SUM("views"), 0)::int              AS "views",
-             COALESCE(SUM("uniqueViews"), 0)::int        AS "uniqueViews"
+             COALESCE(SUM("uniqueViews"), 0)::int        AS "uniqueReaderDays"
       FROM "BlogAnalyticsDaily"
       WHERE "blogId" = ${blogId}
-        AND "date" >= ${utcDateKey(range.startDate)}::date
-        AND "date" <= ${utcDateKey(range.endDate)}::date
+        AND "date" >= ${dateKey(range.startDate)}::date
+        AND "date" <= ${dateKey(range.endDate)}::date
       GROUP BY 1
       ORDER BY 1 ASC
     `;
@@ -198,8 +204,8 @@ export class AnalyticsRepository {
              COALESCE(SUM("comments"), 0)::int                       AS "comments"
       FROM "BlogAnalyticsDaily"
       WHERE "blogId" = ${blogId}
-        AND "date" >= ${utcDateKey(range.startDate)}::date
-        AND "date" <= ${utcDateKey(range.endDate)}::date
+        AND "date" >= ${dateKey(range.startDate)}::date
+        AND "date" <= ${dateKey(range.endDate)}::date
       GROUP BY 1
       ORDER BY 1 ASC
     `;
@@ -220,8 +226,8 @@ export class AnalyticsRepository {
       SELECT ${TOTALS_COLUMNS}
       FROM "BlogAnalyticsDaily"
       WHERE "authorId" = ${authorId}
-        AND "date" >= ${utcDateKey(range.startDate)}::date
-        AND "date" <= ${utcDateKey(range.endDate)}::date
+        AND "date" >= ${dateKey(range.startDate)}::date
+        AND "date" <= ${dateKey(range.endDate)}::date
     `;
     return rows[0] ?? EMPTY_TOTALS;
   }
@@ -230,11 +236,11 @@ export class AnalyticsRepository {
     return prisma.$queryRaw<ViewsRow[]>`
       SELECT ${bucketExpression(range.granularity)}      AS "date",
              COALESCE(SUM("views"), 0)::int              AS "views",
-             COALESCE(SUM("uniqueViews"), 0)::int        AS "uniqueViews"
+             COALESCE(SUM("uniqueViews"), 0)::int        AS "uniqueReaderDays"
       FROM "BlogAnalyticsDaily"
       WHERE "authorId" = ${authorId}
-        AND "date" >= ${utcDateKey(range.startDate)}::date
-        AND "date" <= ${utcDateKey(range.endDate)}::date
+        AND "date" >= ${dateKey(range.startDate)}::date
+        AND "date" <= ${dateKey(range.endDate)}::date
       GROUP BY 1
       ORDER BY 1 ASC
     `;
@@ -250,8 +256,8 @@ export class AnalyticsRepository {
              COALESCE(SUM("comments"), 0)::int                       AS "comments"
       FROM "BlogAnalyticsDaily"
       WHERE "authorId" = ${authorId}
-        AND "date" >= ${utcDateKey(range.startDate)}::date
-        AND "date" <= ${utcDateKey(range.endDate)}::date
+        AND "date" >= ${dateKey(range.startDate)}::date
+        AND "date" <= ${dateKey(range.endDate)}::date
       GROUP BY 1
       ORDER BY 1 ASC
     `;
@@ -266,8 +272,8 @@ export class AnalyticsRepository {
              COALESCE(SUM("blogsPublished"), 0)::int  AS "blogsPublished"
       FROM "UserAnalyticsDaily"
       WHERE "userId" = ${userId}
-        AND "date" >= ${utcDateKey(range.startDate)}::date
-        AND "date" <= ${utcDateKey(range.endDate)}::date
+        AND "date" >= ${dateKey(range.startDate)}::date
+        AND "date" <= ${dateKey(range.endDate)}::date
     `;
     return rows[0] ?? { followersGained: 0, followersLost: 0, blogsPublished: 0 };
   }
@@ -281,8 +287,8 @@ export class AnalyticsRepository {
               - COALESCE(SUM("followersLost"), 0))::int      AS "net"
       FROM "UserAnalyticsDaily"
       WHERE "userId" = ${userId}
-        AND "date" >= ${utcDateKey(range.startDate)}::date
-        AND "date" <= ${utcDateKey(range.endDate)}::date
+        AND "date" >= ${dateKey(range.startDate)}::date
+        AND "date" <= ${dateKey(range.endDate)}::date
       GROUP BY 1
       ORDER BY 1 ASC
     `;
@@ -329,15 +335,15 @@ export class AnalyticsRepository {
         SELECT "blogId",
                ${metricExpression}                                AS "metricValue",
                COALESCE(SUM("views"), 0)::int                     AS "views",
-               COALESCE(SUM("uniqueViews"), 0)::int               AS "uniqueViews",
+               COALESCE(SUM("uniqueViews"), 0)::int               AS "uniqueReaderDays",
                (COALESCE(SUM("bookmarks"), 0)
                 - COALESCE(SUM("unbookmarks"), 0))::int           AS "netBookmarks",
                COALESCE(SUM("comments"), 0)::int                  AS "comments",
                COALESCE(SUM("readCompletions"), 0)::int           AS "readCompletions"
         FROM "BlogAnalyticsDaily"
         WHERE "authorId" = ${authorId}
-          AND "date" >= ${utcDateKey(range.startDate)}::date
-          AND "date" <= ${utcDateKey(range.endDate)}::date
+          AND "date" >= ${dateKey(range.startDate)}::date
+          AND "date" <= ${dateKey(range.endDate)}::date
         GROUP BY "blogId"
       )
       SELECT t."blogId",
@@ -345,7 +351,7 @@ export class AnalyticsRepository {
              b."slug",
              b."publishedAt",
              t."views",
-             t."uniqueViews",
+             t."uniqueReaderDays",
              t."netBookmarks",
              t."comments",
              t."readCompletions",

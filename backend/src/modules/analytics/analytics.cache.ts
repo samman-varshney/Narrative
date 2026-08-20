@@ -27,8 +27,16 @@ import { generationKey, reportKey } from './analytics.keys';
  * request to "slow", never to "500", so every path falls through to the loader.
  */
 
-/** Bumped when a cached DTO's SHAPE changes, invalidating old entries globally. */
-const CACHE_VERSION = 'v1';
+/**
+ * Bumped when a cached DTO's SHAPE changes, invalidating old entries globally.
+ *
+ * v2: views DTOs split `uniqueViews` into `uniqueReaderDays` (always present)
+ * and `uniqueViews` (null above a one-day window). Without the bump, a deploy
+ * over a warm Redis would keep serving pre-change entries for their TTL — and
+ * those carry the OLD meaning under the old name, which is precisely the
+ * misreading the split exists to prevent.
+ */
+const CACHE_VERSION = 'v2';
 
 /** Report families. Each has its own TTL. */
 export type ReportScope =

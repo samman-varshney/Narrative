@@ -55,7 +55,7 @@ const BLOG_META = {
 
 const totals = (overrides: Partial<AnalyticsTotals> = {}): AnalyticsTotals => ({
   views: 0,
-  uniqueViews: 0,
+  uniqueReaderDays: 0,
   readStarts: 0,
   readCompletions: 0,
   totalReadingSeconds: 0,
@@ -301,6 +301,106 @@ describe('AnalyticsService', () => {
     });
   });
 
+  /**
+   * The rule these pin: an exact unique-reader count exists only for a window of
+   * one day, because distinct readers are counted with one HyperLogLog per day
+   * and two days' counts cannot be added without double-counting whoever
+   * returned. Anything wider reports reader-days and `null`.
+   *
+   * Worth testing at this layer rather than only end-to-end, because the failure
+   * mode is a plausible number rather than an error — the previous shape summed
+   * daily uniques and published the result as "unique views", inflating a 30-day
+   * dashboard by every returning reader.
+   */
+  describe('unique readers vs reader-days', () => {
+    const viewsTotals = totals({ views: 100, uniqueReaderDays: 60 });
+
+    it('withholds the exact count over a multi-day range', async () => {
+      const service = new AnalyticsService(
+        stubRepository({
+          getUserTotals: jest.fn().mockResolvedValue(viewsTotals),
+        } as Partial<AnalyticsRepository>),
+        stubIngestion()
+      );
+
+      const overview = await service.getUserOverview(AUTHOR, {
+        startDate: '2026-08-01',
+        endDate: '2026-08-10',
+      });
+
+      expect(overview.uniqueReaderDays).toBe(60);
+      expect(overview.uniqueViews).toBeNull();
+    });
+
+    it('reports the exact count when the range is a single day', async () => {
+      const service = new AnalyticsService(
+        stubRepository({
+          getUserTotals: jest.fn().mockResolvedValue(viewsTotals),
+        } as Partial<AnalyticsRepository>),
+        stubIngestion()
+      );
+
+      const overview = await service.getUserOverview(AUTHOR, {
+        startDate: '2026-08-01',
+        endDate: '2026-08-01',
+      });
+
+      expect(overview.uniqueViews).toBe(60);
+      expect(overview.uniqueReaderDays).toBe(60);
+    });
+
+    it('withholds the exact count per-bucket above daily granularity', async () => {
+      const getUserViewsSeries = jest
+        .fn()
+        .mockResolvedValue([
+          { date: new Date('2026-07-27T00:00:00.000Z'), views: 40, uniqueReaderDays: 25 },
+        ]);
+      const service = new AnalyticsService(
+        stubRepository({ getUserViewsSeries } as Partial<AnalyticsRepository>),
+        stubIngestion()
+      );
+
+      const weekly = await service.getUserViews(AUTHOR, {
+        granularity: 'week',
+        startDate: '2026-07-27',
+        endDate: '2026-08-10',
+      });
+      const daily = await service.getUserViews(AUTHOR, {
+        granularity: 'day',
+        startDate: '2026-07-27',
+        endDate: '2026-08-10',
+      });
+
+      // Same column, same value, different meaning — which is exactly why they
+      // are different fields.
+      expect(weekly.points[0]?.uniqueReaderDays).toBe(25);
+      expect(weekly.points[0]?.uniqueViews).toBeNull();
+      expect(daily.points[0]?.uniqueViews).toBe(25);
+    });
+
+    it('ranks top blogs by reader-days, since no per-day figure exists to rank on', async () => {
+      const getTopBlogs = jest.fn().mockResolvedValue([]);
+      const service = new AnalyticsService(
+        stubRepository({ getTopBlogs } as Partial<AnalyticsRepository>),
+        stubIngestion()
+      );
+
+      await service.getUserTopBlogs(AUTHOR, {
+        ...QUERY,
+        metric: 'uniqueReaderDays',
+        limit: 10,
+      });
+
+      expect(getTopBlogs).toHaveBeenCalledWith(
+        'author-1',
+        expect.anything(),
+        'uniqueReaderDays',
+        10,
+        undefined
+      );
+    });
+  });
+
   describe('top blogs', () => {
     const rows = (count: number) =>
       Array.from({ length: count }, (_unused, i) => ({
@@ -309,7 +409,7 @@ describe('AnalyticsService', () => {
         slug: `post-${i}`,
         publishedAt: null,
         views: 100 - i,
-        uniqueViews: 50,
+        uniqueReaderDays: 50,
         netBookmarks: 1,
         comments: 0,
         readCompletions: 0,
@@ -583,8 +683,8 @@ describe('AnalyticsService', () => {
       // on every hit — so the endpoint failed only on its second call, which no
       // test using an empty result set could ever see.
       const getUserViewsSeries = jest.fn().mockResolvedValue([
-        { date: new Date('2026-08-01T00:00:00.000Z'), views: 5, uniqueViews: 3 },
-        { date: new Date('2026-08-02T00:00:00.000Z'), views: 7, uniqueViews: 4 },
+        { date: new Date('2026-08-01T00:00:00.000Z'), views: 5, uniqueReaderDays: 3 },
+        { date: new Date('2026-08-02T00:00:00.000Z'), views: 7, uniqueReaderDays: 4 },
       ]);
       const service = new AnalyticsService(
         stubRepository({ getUserViewsSeries } as Partial<AnalyticsRepository>),
@@ -597,7 +697,12 @@ describe('AnalyticsService', () => {
 
       expect(getUserViewsSeries).toHaveBeenCalledTimes(1);
       expect(hit.points).toEqual(miss.points);
-      expect(hit.points[0]).toEqual({ date: '2026-08-01', views: 5, uniqueViews: 3 });
+      expect(hit.points[0]).toEqual({
+        date: '2026-08-01',
+        views: 5,
+        uniqueReaderDays: 3,
+        uniqueViews: 3,
+      });
     });
 
     it('returns a well-formed engagement series on a cache hit', async () => {
@@ -651,7 +756,7 @@ describe('AnalyticsService', () => {
           slug: 'a-post',
           publishedAt: new Date('2026-08-01T00:00:00.000Z'),
           views: 10,
-          uniqueViews: 8,
+          uniqueReaderDays: 8,
           netBookmarks: 1,
           comments: 0,
           readCompletions: 0,
@@ -677,7 +782,7 @@ describe('AnalyticsService', () => {
       const getUserViewsSeries = jest
         .fn()
         .mockResolvedValue([
-          { date: new Date('2026-08-01T00:00:00.000Z'), views: 5, uniqueViews: 3 },
+          { date: new Date('2026-08-01T00:00:00.000Z'), views: 5, uniqueReaderDays: 3 },
         ]);
       const service = new AnalyticsService(
         stubRepository({ getUserViewsSeries } as Partial<AnalyticsRepository>),

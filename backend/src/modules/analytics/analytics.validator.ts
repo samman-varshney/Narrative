@@ -106,8 +106,13 @@ export type TotalsRangeQuery = z.infer<typeof totalsRangeQuerySchema>;
 export const MAX_TOP_BLOGS_LIMIT = 50;
 export const DEFAULT_TOP_BLOGS_LIMIT = 10;
 
+/**
+ * `uniqueReaderDays`, not `uniqueViews`: ranking is over the whole range, and
+ * an exact unique-reader count only exists for a single day. See
+ * `analytics.types` § `uniqueReaderDays`.
+ */
 export const topBlogsMetricSchema = z
-  .enum(['views', 'uniqueViews', 'bookmarks', 'comments', 'readCompletions'])
+  .enum(['views', 'uniqueReaderDays', 'bookmarks', 'comments', 'readCompletions'])
   .default('views');
 
 export const topBlogsQuerySchema = dateRangeQuerySchema.extend({

@@ -8,9 +8,9 @@ import {
 } from './analytics.validator';
 import {
   estimateBucketCount,
-  parseUtcDateKey,
-  startOfUtcDay,
-  utcDaysAgo,
+  parseDateKey,
+  reportingDaysAgo,
+  startOfReportingDay,
 } from './analytics.time';
 import type { DateRange } from './analytics.types';
 
@@ -29,11 +29,17 @@ import type { DateRange } from './analytics.types';
  * granularity" without parsing prose.
  */
 
-/** The window used when a caller sends no dates: the last 30 days, inclusive. */
+/**
+ * The window used when a caller sends no dates: the last 30 days, inclusive.
+ *
+ * "Today" is the REPORTING day, not the UTC one — an author whose boundary is
+ * configured to their audience's would otherwise get a default range that ends
+ * on the wrong day for part of every 24 hours.
+ */
 function defaultRange(now: Date): { startDate: Date; endDate: Date } {
   return {
-    startDate: utcDaysAgo(DEFAULT_RANGE_DAYS - 1, now),
-    endDate: startOfUtcDay(now),
+    startDate: reportingDaysAgo(DEFAULT_RANGE_DAYS - 1, now),
+    endDate: startOfReportingDay(now),
   };
 }
 
@@ -83,8 +89,11 @@ export function resolveTotalsRange(
 function resolveBounds(query: DateRangeQuery, now: Date): DateRange {
   const defaults = defaultRange(now);
 
-  const startDate = query.startDate ? parseUtcDateKey(query.startDate) : defaults.startDate;
-  const endDate = query.endDate ? parseUtcDateKey(query.endDate) : defaults.endDate;
+  // Caller-supplied dates are already calendar days — labels — so they are
+  // parsed, never offset-shifted. `2026-08-20` means that day on the reporting
+  // calendar whatever the offset is.
+  const startDate = query.startDate ? parseDateKey(query.startDate) : defaults.startDate;
+  const endDate = query.endDate ? parseDateKey(query.endDate) : defaults.endDate;
 
   // The regex in the schema accepts `2026-02-31`; only a real parse rejects it.
   if (!startDate) {
@@ -98,14 +107,14 @@ function resolveBounds(query: DateRangeQuery, now: Date): DateRange {
     throw new AppError('startDate must not be after endDate', 400, 'INVALID_DATE_RANGE');
   }
 
-  // A future end date is allowed and clamped rather than rejected: a client in a
-  // timezone ahead of UTC legitimately believes it is already tomorrow, and
+  // A future end date is allowed and clamped rather than rejected: a client
+  // ahead of the reporting boundary legitimately believes it is tomorrow, and
   // returning a validation error for "today" would be indefensible. Data for
   // future days cannot exist, so clamping changes nothing about the answer.
-  const today = startOfUtcDay(now);
+  const today = startOfReportingDay(now);
   const boundedEnd = endDate > today ? today : endDate;
 
-  const earliest = utcDaysAgo(MAX_LOOKBACK_DAYS, now);
+  const earliest = reportingDaysAgo(MAX_LOOKBACK_DAYS, now);
   if (startDate < earliest) {
     throw new AppError(
       `startDate must be within the last ${MAX_LOOKBACK_DAYS} days — older aggregates are pruned`,

@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../../core/database/prisma';
 import type { BlogDailyDelta, UserDailyDelta } from '../analytics.types';
+import { dateKey } from '../analytics.time';
 import type { IAnalyticsStore } from './IAnalyticsStore';
 
 /**
@@ -133,7 +134,7 @@ export class PostgresAnalyticsStore implements IAnalyticsStore {
     before: Date,
     limit: number
   ): Promise<{ blogRows: number; userRows: number }> {
-    const cutoff = before.toISOString().slice(0, 10);
+    const cutoff = dateKey(before);
 
     const blogRows = await prisma.$executeRaw`
       DELETE FROM "BlogAnalyticsDaily"

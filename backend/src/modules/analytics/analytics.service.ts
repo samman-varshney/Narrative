@@ -14,7 +14,7 @@ import {
 import { withReportCache } from './analytics.cache';
 import { resolveDateRange, resolveTotalsRange } from './analytics.range';
 import { decodeTopBlogsCursor, encodeTopBlogsCursor, topBlogsFingerprint } from './analytics.cursor';
-import { utcDateKey } from './analytics.time';
+import { bucketsAreSingleDays, dateKey, rangeIsSingleDay } from './analytics.time';
 import type {
   AnalyticsEvent,
   BlogOverviewDTO,
@@ -123,7 +123,8 @@ export class AnalyticsService {
       publishedAt: blog.publishedAt ? blog.publishedAt.toISOString() : null,
       range: this.rangeDTO(range),
       views: totals.views,
-      uniqueViews: totals.uniqueViews,
+      uniqueReaderDays: totals.uniqueReaderDays,
+      uniqueViews: rangeIsSingleDay(range) ? totals.uniqueReaderDays : null,
       bookmarks: totals.bookmarks,
       netBookmarks: totals.bookmarks - totals.unbookmarks,
       comments: totals.comments,
@@ -150,7 +151,7 @@ export class AnalyticsService {
       { blogId, ...this.cacheParts(range) },
       async () =>
         (await this.repository.getBlogViewsSeries(blogId, range)).map((row) =>
-          this.viewsPoint(row)
+          this.viewsPoint(row, bucketsAreSingleDays(range.granularity))
         )
     );
 
@@ -238,7 +239,8 @@ export class AnalyticsService {
       followers,
       // Range-scoped, from the aggregates.
       views: totals.views,
-      uniqueViews: totals.uniqueViews,
+      uniqueReaderDays: totals.uniqueReaderDays,
+      uniqueViews: rangeIsSingleDay(range) ? totals.uniqueReaderDays : null,
       bookmarks: totals.bookmarks,
       netBookmarks: totals.bookmarks - totals.unbookmarks,
       comments: totals.comments,
@@ -261,7 +263,7 @@ export class AnalyticsService {
       this.cacheParts(range),
       async () =>
         (await this.repository.getUserViewsSeries(requester.userId, range)).map((row) =>
-          this.viewsPoint(row)
+          this.viewsPoint(row, bucketsAreSingleDays(range.granularity))
         )
     );
 
@@ -373,7 +375,7 @@ export class AnalyticsService {
         const last = page[page.length - 1];
 
         return {
-          items: page.map((row) => this.topBlogDTO(row)),
+          items: page.map((row) => this.topBlogDTO(row, rangeIsSingleDay(range))),
           hasNextPage,
           nextCursor:
             hasNextPage && last ? encodeTopBlogsCursor(fingerprint, last) : null,
@@ -497,13 +499,24 @@ export class AnalyticsService {
     };
   }
 
-  private viewsPoint(row: ViewsRow): ViewsPoint {
-    return { date: utcDateKey(row.date), views: row.views, uniqueViews: row.uniqueViews };
+  /**
+   * `exactUniques` is decided by the CALLER's range, not by the row: the same
+   * summed column is an exact unique-reader count when the bucket is one day
+   * and a reader-day total otherwise. Passing the flag in keeps that decision in
+   * one place per endpoint instead of re-deriving it per row.
+   */
+  private viewsPoint(row: ViewsRow, exactUniques: boolean): ViewsPoint {
+    return {
+      date: dateKey(row.date),
+      views: row.views,
+      uniqueReaderDays: row.uniqueReaderDays,
+      uniqueViews: exactUniques ? row.uniqueReaderDays : null,
+    };
   }
 
   private engagementPoint(row: EngagementRow): EngagementPoint {
     return {
-      date: utcDateKey(row.date),
+      date: dateKey(row.date),
       bookmarks: row.bookmarks,
       unbookmarks: row.unbookmarks,
       netBookmarks: row.netBookmarks,
@@ -512,17 +525,18 @@ export class AnalyticsService {
   }
 
   private followerPoint(row: FollowerRow): FollowerPoint {
-    return { date: utcDateKey(row.date), gained: row.gained, lost: row.lost, net: row.net };
+    return { date: dateKey(row.date), gained: row.gained, lost: row.lost, net: row.net };
   }
 
-  private topBlogDTO(row: TopBlogRow): TopBlogDTO {
+  private topBlogDTO(row: TopBlogRow, exactUniques: boolean): TopBlogDTO {
     return {
       blogId: row.blogId,
       title: row.title,
       slug: row.slug,
       publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
       views: row.views,
-      uniqueViews: row.uniqueViews,
+      uniqueReaderDays: row.uniqueReaderDays,
+      uniqueViews: exactUniques ? row.uniqueReaderDays : null,
       netBookmarks: row.netBookmarks,
       comments: row.comments,
       metricValue: row.metricValue,
@@ -530,14 +544,14 @@ export class AnalyticsService {
   }
 
   private rangeDTO(range: DateRange): { startDate: string; endDate: string } {
-    return { startDate: utcDateKey(range.startDate), endDate: utcDateKey(range.endDate) };
+    return { startDate: dateKey(range.startDate), endDate: dateKey(range.endDate) };
   }
 
   /** The parts of a resolved range that belong in a cache key. */
   private cacheParts(range: DateRange): Record<string, unknown> {
     return {
-      start: utcDateKey(range.startDate),
-      end: utcDateKey(range.endDate),
+      start: dateKey(range.startDate),
+      end: dateKey(range.endDate),
       granularity: range.granularity,
     };
   }
