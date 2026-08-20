@@ -1,4 +1,3 @@
-import EventEmitter from 'events';
 import { domainEventsQueue } from '../providers/queue';
 import { logger } from '../utils/logger';
 import { env } from '../config/env';
@@ -28,7 +27,14 @@ export type DomainEventHandler = (payload: any) => void | Promise<void>;
 
 const handlers = new Map<string, DomainEventHandler[]>();
 
-class EventBus extends EventEmitter {
+/**
+ * Plain class, NOT an EventEmitter subclass. `on` writes to this module's own
+ * handler map, so inheriting EventEmitter would leave `once`, `off`,
+ * `removeListener` and `listenerCount` silently operating on an unused internal
+ * registry — anyone reaching for the standard API would register a handler that
+ * never fires.
+ */
+class EventBus {
   /**
    * Publishes a domain event. Fire-and-forget by design: a queue outage must
    * never fail the user's request, so enqueue errors are logged, not thrown —
@@ -134,7 +140,7 @@ export const EVENTS = {
 
   // Comment — payloads:
   //  COMMENT_CREATED  { commentId, blogId, authorId, blogAuthorId, parentId }
-  //  COMMENT_REPLIED  { commentId, blogId, authorId, parentId, parentAuthorId }
+  //  COMMENT_REPLIED  { commentId, blogId, authorId, parentId, parentAuthorId, blogAuthorId }
   //  COMMENT_UPDATED  { commentId, blogId, authorId }
   //  COMMENT_DELETED  { commentId, blogId, authorId }
   //  COMMENT_RESTORED { commentId, blogId, authorId }

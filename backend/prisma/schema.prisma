@@ -43,6 +43,32 @@ enum MediaResourceType {
   DOCUMENT // reserved — not built yet
 }
 
+enum NotificationType {
+  FOLLOW
+  COMMENT
+  REPLY
+  BLOG
+  SYSTEM
+  // Reserved — the orchestrator and preference matrix already handle unknown
+  // types by falling back to defaults, so adding one needs no code change here.
+  MENTION // reserved — not built yet
+  LIKE // reserved — not built yet
+}
+
+/// Channels with real delivery semantics. IN_APP is intentionally absent: it is
+/// persisted directly as a Notification row and has nothing to track.
+enum DeliveryChannel {
+  EMAIL
+  PUSH // reserved — not built yet
+  SMS // reserved — not built yet
+}
+
+enum DeliveryStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
 model User {
   id           String  @id @default(cuid())
   email        String  @unique
@@ -74,7 +100,8 @@ model User {
   followers Follow[] @relation("UserFollowers")
   following Follow[] @relation("UserFollowing")
 
-  notifications Notification[]
+  notifications      Notification[] @relation("NotificationRecipient")
+  actedNotifications Notification[] @relation("NotificationActor")
   sessions      Session[]
   skills        UserSkill[]
   media         Media[]        @relation("MediaUploader")
@@ -372,17 +399,67 @@ model Follow {
 model Notification {
   id String @id @default(cuid())
 
-  userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Who receives it.
+  recipientId String
+  recipient   User   @relation("NotificationRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
 
-  type     String // e.g., 'NEW_FOLLOWER', 'BLOG_LIKED', 'COMMENT_RECEIVED'
-  sourceId String? // ID of the related entity (e.g., Blog ID or User ID)
-  message  String
-  isRead   Boolean @default(false)
+  // Who caused it. Null for SYSTEM notifications. SetNull (not Cascade) so a
+  // deleted actor doesn't erase the recipient's history.
+  actorId String?
+  actor   User?   @relation("NotificationActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  type NotificationType
+
+  // What it points at, for deep links. entityType tells the client how to route.
+  entityType String? // 'BLOG' | 'COMMENT' | 'USER'
+  entityId   String?
+
+  // Render inputs (blogTitle, commentExcerpt, ...) — NOT rendered text. Storing
+  // a finished string would freeze it: a renamed user leaves stale copy behind
+  // and UserSettings.language could never be honoured.
+  metadata Json?
+
+  isRead Boolean   @default(false)
+  readAt DateTime?
+
+  /// Idempotency key: one notification per (recipient, event occurrence). Makes a
+  /// retried fan-out job a no-op via createMany(skipDuplicates) / P2002.
+  dedupeKey String @unique
 
   createdAt DateTime @default(now())
 
-  @@index([userId, isRead])
+  deliveries NotificationDelivery[]
+
+  @@index([recipientId, createdAt]) // the list query, newest-first
+  @@index([recipientId, isRead, createdAt]) // filtered list (unread only)
+  @@index([entityType, entityId]) // future: "notifications about this blog"
+  // NOTE: the unread COUNT is served by a partial index that Prisma cannot
+  // express — see prisma/sql/notification_unread_idx.sql, applied by db:indexes.
+}
+
+model NotificationDelivery {
+  id String @id @default(cuid())
+
+  notificationId String
+  notification   Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  // In-app is deliberately NOT tracked: it has no delivery semantics, and a row
+  // per in-app notification would double the write volume of every fan-out.
+  channel  DeliveryChannel
+  provider String? // 'resend' | 'log' | ...
+
+  providerMessageId String?
+  status            DeliveryStatus @default(PENDING)
+  attempts          Int            @default(0)
+
+  sentAt   DateTime?
+  failedAt DateTime?
+  error    String?   @db.Text
+
+  createdAt DateTime @default(now())
+
+  @@unique([notificationId, channel]) // one delivery record per channel
+  @@index([status, createdAt]) // retry sweeps / failure dashboards
 }
 
 model Session {

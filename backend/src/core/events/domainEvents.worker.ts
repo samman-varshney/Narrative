@@ -17,13 +17,33 @@ import { logger } from '../utils/logger';
  * neither blocks its siblings nor fails the job. A job therefore only fails —
  * and retries — on infrastructure errors, not on subscriber bugs.
  */
-export const domainEventsWorker = createWorker(QUEUES.DOMAIN_EVENTS, async (job) => {
-  const { event, payload } = job.data as { event?: string; payload?: unknown };
+let worker: ReturnType<typeof createWorker> | null = null;
 
-  if (!event) {
-    logger.warn({ jobId: job.id }, 'Domain event job missing an event name — skipped');
-    return;
-  }
+/**
+ * Starts consuming domain events.
+ *
+ * Deliberately a function rather than a side-effect import: static ES imports
+ * are hoisted and all run before any top-level statement, so an import-time
+ * worker would begin consuming BEFORE `registerNotificationSubscribers()` ran —
+ * and any event already queued would dispatch to an empty handler list and be
+ * silently dropped. Callers must register subscribers first, then call this.
+ *
+ * Idempotent: a second call returns the existing worker.
+ */
+export function startDomainEventsWorker() {
+  if (worker) return worker;
 
-  await eventBus.dispatch(event, payload);
-});
+  worker = createWorker(QUEUES.DOMAIN_EVENTS, async (job) => {
+    const { event, payload } = job.data as { event?: string; payload?: unknown };
+
+    if (!event) {
+      logger.warn({ jobId: job.id }, 'Domain event job missing an event name — skipped');
+      return;
+    }
+
+    await eventBus.dispatch(event, payload);
+  });
+
+  logger.info('Domain events worker started');
+  return worker;
+}

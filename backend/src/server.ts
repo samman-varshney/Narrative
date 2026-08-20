@@ -8,9 +8,17 @@ import { closeWorkers } from './core/providers/queue';
 import { prisma } from './core/database/prisma';
 // Side-effect imports: start background workers (open Redis connections eagerly).
 import './modules/media/media.worker';
-// Dispatches published domain events to subscribers. Must be imported AFTER
-// subscribers are registered below, or early jobs would find no handlers.
-import './core/events/domainEvents.worker';
+import './modules/notification/notification.worker';
+import './modules/notification/email.worker';
+import { registerNotificationSubscribers } from './modules/notification/subscribers';
+import { startDomainEventsWorker } from './core/events/domainEvents.worker';
+
+// Order is load-bearing, and cannot be expressed with import placement: static
+// imports are hoisted and all run before any statement here. Subscribers must be
+// registered BEFORE the dispatcher consumes, or an already-queued event would
+// dispatch to an empty handler list and be silently dropped.
+registerNotificationSubscribers();
+startDomainEventsWorker();
 
 const PORT = process.env.PORT || 5000;
 

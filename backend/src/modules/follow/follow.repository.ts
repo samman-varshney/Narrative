@@ -135,6 +135,39 @@ export class FollowRepository {
   }
 
   /**
+   * A bounded batch of follower ids, for fan-out. Ids only — a fan-out needs no
+   * profile fields — and always bounded, unlike the ad-hoc unbounded query this
+   * was extracted from, which would load every row for a user with 500k followers.
+   *
+   * Ordered by id (not createdAt) so paging is stable even while new follows
+   * arrive mid-fan-out: a keyset walk on a monotonic column cannot revisit or
+   * skip rows the way an ordered-by-time cursor can.
+   *
+   * Filters to ACTIVE followers — suspended and soft-deleted users remain rows
+   * and must not receive notifications.
+   */
+  async getFollowerIdsBatch(
+    userId: string,
+    { afterId, limit }: { afterId?: string; limit: number }
+  ): Promise<{ ids: string[]; nextAfterId: string | null }> {
+    const rows = await prisma.follow.findMany({
+      where: {
+        followingId: userId,
+        follower: { status: 'ACTIVE' },
+        ...(afterId && { id: { gt: afterId } }),
+      },
+      select: { id: true, followerId: true },
+      orderBy: { id: 'asc' },
+      take: limit,
+    });
+
+    return {
+      ids: rows.map((r) => r.followerId),
+      nextAfterId: rows.length === limit ? rows[rows.length - 1]!.id : null,
+    };
+  }
+
+  /**
    * Future-ready: users who follow BOTH `userIdA` and `userIdB` (their mutual
    * followers). Not yet exposed via a route — kept here so the mutual-follow
    * feature can be wired up without touching the data layer.

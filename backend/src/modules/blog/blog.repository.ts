@@ -65,6 +65,10 @@ export const blogVisibilitySelect = {
   status: true,
   visibility: true,
   authorId: true,
+  // Title/slug ride along for notification copy and deep links. Still four
+  // scalars — nothing like the content JSON `blogDetailSelect` would pull.
+  title: true,
+  slug: true,
 } satisfies Prisma.BlogSelect;
 
 export type BlogCard = Prisma.BlogGetPayload<{ select: typeof blogCardSelect }>;

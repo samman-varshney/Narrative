@@ -140,13 +140,13 @@ export class CommentService {
     input: CreateCommentInput
   ): Promise<CommentDTO> {
     const content = this.sanitize(input.content);
-    await this.assertCommentableBlog(blogId);
+    const blog = await this.assertCommentableBlog(blogId);
 
     const parent = input.parentId
       ? await this.loadParentInBlog(input.parentId, blogId)
       : null;
 
-    return this.persist(authorId, blogId, parent, content);
+    return this.persist(authorId, blogId, parent, content, blog.authorId);
   }
 
   /** Replies to a comment; the blog is inferred from the parent. */
@@ -157,8 +157,8 @@ export class CommentService {
   ): Promise<CommentDTO> {
     const content = this.sanitize(input.content);
     const parent = await this.load(parentId);
-    await this.assertCommentableBlog(parent.blogId);
-    return this.persist(authorId, parent.blogId, parent, content);
+    const blog = await this.assertCommentableBlog(parent.blogId);
+    return this.persist(authorId, parent.blogId, parent, content, blog.authorId);
   }
 
   /**
@@ -173,7 +173,8 @@ export class CommentService {
     authorId: string,
     blogId: string,
     parent: CommentRow | null,
-    content: string
+    content: string,
+    blogAuthorId: string
   ): Promise<CommentDTO> {
     let parentId: string | null = null;
     let depth = 0;
@@ -206,6 +207,9 @@ export class CommentService {
       commentId: created.id,
       blogId,
       authorId,
+      // The blog owner — the notification recipient for a top-level comment.
+      // Carried on the event so subscribers need no extra blog lookup.
+      blogAuthorId,
       parentId: created.parentId,
     });
     if (parent) {
@@ -217,6 +221,10 @@ export class CommentService {
         authorId,
         parentId: parent.id,
         parentAuthorId: parent.authorId,
+        // Carried so the reply subscriber can also reach the blog owner without
+        // a second lookup: COMMENT_CREATED skips every reply, so without this
+        // an owner learns nothing about replies on their own post.
+        blogAuthorId,
       });
     }
 
@@ -414,11 +422,18 @@ export class CommentService {
   }
 
   /** Verifies the blog exists and is not deleted. */
-  private async assertCommentableBlog(blogId: string): Promise<void> {
+  /**
+   * Verifies the blog exists and is not deleted, returning its author id — the
+   * notification recipient for a top-level comment. The blog is already loaded
+   * here, so surfacing `authorId` costs nothing; without it every COMMENT_CREATED
+   * subscriber would have to re-fetch the blog just to learn who to notify.
+   */
+  private async assertCommentableBlog(blogId: string): Promise<{ authorId: string }> {
     const blog = await blogRepository.findById(blogId);
     if (!blog || blog.status === 'DELETED') {
       throw new AppError('Blog not found', 404, 'BLOG_NOT_FOUND');
     }
+    return { authorId: blog.authorId };
   }
 
   private assertOwnership(authorId: string, userId: string, role: string): void {

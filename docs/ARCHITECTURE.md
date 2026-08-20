@@ -152,12 +152,16 @@ graph TD
 
 ## 10. Notification Flow
 
-1. Action occurs (e.g., User A likes Blog B).
-2. `LikeService` emits `BLOG_LIKED` event.
-3. `NotificationListener` catches the event.
-4. It creates an In-App Notification record in PostgreSQL.
-5. If the user's settings allow emails, it pushes a job to BullMQ `email_queue`.
-6. BullMQ Worker processes the job, formats an email template, and sends it via Nodemailer.
+1. Action occurs (e.g., User A follows User B).
+2. `FollowService` emits `USER_FOLLOWED` — it knows nothing about notifications.
+3. The event is published to the durable `domain_events` queue (not an in-process emitter).
+4. The Domain Events Worker dispatches it to registered subscribers.
+5. `FollowNotificationSubscriber` builds a NotificationRequest and hands it to the Notification Orchestrator.
+6. The orchestrator drops self-notifications, resolves the user's preferences, and persists an In-App Notification.
+7. If email is enabled for that type, it writes a PENDING NotificationDelivery and pushes a job to `email_queue`.
+8. The Email Worker renders a template and sends via the configured EmailProvider (log in development, Resend in production), then records SENT/FAILED.
+
+See [NOTIFICATION_MODULE.md](./NOTIFICATION_MODULE.md) for the full design.
 
 ## 11. Analytics Flow
 
@@ -180,9 +184,9 @@ To prevent database contention on read/write heavy metrics (like view counts or 
 
 ## 14. Background Job Strategy (BullMQ)
 
-* **Redis-Backed:** BullMQ uses Redis to maintain job queues (`email`, `media_processing`, `analytics_flush`).
+* **Redis-Backed:** BullMQ uses Redis to maintain job queues (`domain_events`, `email_queue`, `notification_queue`, `media_processing`, `analytics_flush`).
 * **Workers:** Dedicated Node.js worker processes (or threads within the monolith, depending on scale) consume jobs.
-* **Retries & DLQ:** Jobs are configured with exponential backoff retries. Failed jobs are moved to a Dead Letter Queue (DLQ) for manual inspection.
+* **Retries:** Every queue applies `DEFAULT_JOB_OPTIONS` (5 attempts, exponential backoff from 2s). Completed jobs are reaped after an hour; **failed jobs are retained for 24h** for inspection, which serves the DLQ role — there is no separate DLQ queue.
 
 ## 15. Error Handling Strategy
 

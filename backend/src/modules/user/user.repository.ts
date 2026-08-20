@@ -102,6 +102,26 @@ export class UserRepository {
     });
   }
 
+  /**
+   * Settings row for a user, or null when they have never saved any (the row is
+   * created lazily by `updateSettings`). Callers must treat null as "defaults",
+   * not as "everything disabled".
+   */
+  async findSettingsByUserId(userId: string) {
+    return prisma.userSettings.findUnique({ where: { userId } });
+  }
+
+  /**
+   * Settings rows for many users in ONE query. Fan-out resolves preferences for
+   * a whole batch of recipients; doing that per user is a textbook N+1 that
+   * serializes thousands of queries over the shared connection pool and stalls
+   * every concurrent HTTP request behind it.
+   */
+  async findSettingsByUserIds(userIds: string[]) {
+    if (userIds.length === 0) return [];
+    return prisma.userSettings.findMany({ where: { userId: { in: userIds } } });
+  }
+
   async syncSkills(userId: string, skillNames: string[]) {
     return prisma.$transaction(async (tx) => {
       const skillIds = await Promise.all(skillNames.map(async (name) => {

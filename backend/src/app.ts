@@ -19,6 +19,7 @@ import {
   blogBookmarkRoutes,
   userBookmarkRoutes,
 } from './modules/bookmark/bookmark.routes';
+import { notificationRoutes } from './modules/notification/notification.routes';
 
 const app: Application = express();
 
@@ -73,6 +74,7 @@ app.use('/api/v1/blogs', blogRoutes);
 // after blogRoutes keeps intent clear.
 app.use('/api/v1/blogs', blogCommentRoutes);
 app.use('/api/v1/comments', commentRoutes);
+app.use('/api/v1/notifications', notificationRoutes);
 
 // Global Error Handler
 app.use(globalErrorHandler);
