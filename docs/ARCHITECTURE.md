@@ -37,7 +37,8 @@ src/
 │   ├── dashboard/
 │   ├── moderation/       # reports, moderation actions, the audit log
 │   ├── export/           # data-export requests, artifacts, the document shape
-│   └── rss/              # RSS feed generation, caching and invalidation
+│   ├── rss/              # RSS feed generation, caching and invalidation
+│   └── seo/              # public metadata, sitemaps, robots.txt
 ├── app.ts                 # Express app setup and middleware wiring
 └── server.ts              # Entry point and server initialization
 ```
@@ -80,6 +81,7 @@ src/
 * **Media:** Handles parsing, validating, and uploading files via `IStorageProvider`.
 * **Data Export:** The user's own copy of everything the platform holds about them. Owns the `ExportRequest` lifecycle, the document shape and the exclusion policy — and, like Feed and Dashboard, composes every fact from the module that owns it. It sits above Blog, Comment, Bookmark, Follow, Notification, Media and Analytics because all of them import User: an export inside the User module would invert the dependency graph. See [EXPORT_MODULE.md](./EXPORT_MODULE.md).
 * **RSS & Distribution:** The syndication surface — RSS 2.0 feeds for the platform's public writing (global, per author, per category, per tag). A pure composition module like Feed and Dashboard: it owns no table and no column, delegates content eligibility to the Feed module's discovery predicate rather than restating it, and consumes Blog, User, Media and the editor abstraction for everything else. It is an event **consumer** only. See [RSS_MODULE.md](./RSS_MODULE.md).
+* **SEO & Public Metadata:** The metadata surface — resolved title, description, canonical URL, robots directive, Open Graph, Twitter/X card and Schema.org structured data for every public page, plus `robots.txt` and a chunked sitemap. A pure composition module like Feed, Dashboard and RSS: it owns no table and no column, reuses `BlogSEO` rather than introducing a competing model, and answers "may this be indexed" by delegating to the two definitions that already exist — `blogService.canView` for whether a page is public at all, and the Feed module's discovery predicate for whether it may be advertised. It is an event **consumer** only. See [SEO_MODULE.md](./SEO_MODULE.md).
 * **Moderation & Administration:** Content reports, the moderation queue, administrative actions and the append-only audit log. Owns reports and the audit log only — every action it takes is performed by the module that owns the data (Blog hides a blog, User suspends an account), so there is one definition of "hidden" and "suspended" on the platform. See [MODERATION_MODULE.md](./MODERATION_MODULE.md).
 
 ## 5. Dependency Rules
@@ -324,7 +326,7 @@ keeps `Dashboard → Analytics → Dashboard` structurally impossible. See
 ## 13. Caching Strategy (Redis)
 
 * **Read-Heavy Endpoints:** Responses for endpoints like the feeds, search and public profiles are cached in Redis as serialized JSON.
-* **Invalidation — generation counters, not key deletion:** cache entries carry a TTL, and a relevant domain event advances a per-scope GENERATION number that is part of every key. Invalidation is then one `INCR` and old entries become unreachable instantly, whatever the cache size. The `DEL cache:home_feed` approach this document originally described cannot work for a feed or a search cache: the key encodes the filters, options and cursor, so the set of keys a single publish invalidates is unknowable without re-running every cached query, and `SCAN`/`KEYS` over a shared Redis is O(keyspace). Both the Search and Feed modules use generations; Analytics can be more precise still (per-author generations) because a flush knows exactly whose numbers changed. The RSS module carries two as well, for a different reason: a per-scope generation gives targeted invalidation for the frequent case (a publish drops only that author's, that tag's and that category's feeds) and a single ROOT generation gives an O(1) platform-wide flush for the rare, security-critical case (a suspension, a moderation removal) whose blast radius cannot be enumerated cheaply. The Dashboard module carries TWO generations in every key — its own and the Analytics one — because it caches a payload that CONTAINS analytics reports, and an outer cache that outlives its inner one serves numbers the same client can see are stale from another endpoint.
+* **Invalidation — generation counters, not key deletion:** cache entries carry a TTL, and a relevant domain event advances a per-scope GENERATION number that is part of every key. Invalidation is then one `INCR` and old entries become unreachable instantly, whatever the cache size. The `DEL cache:home_feed` approach this document originally described cannot work for a feed or a search cache: the key encodes the filters, options and cursor, so the set of keys a single publish invalidates is unknowable without re-running every cached query, and `SCAN`/`KEYS` over a shared Redis is O(keyspace). Both the Search and Feed modules use generations; Analytics can be more precise still (per-author generations) because a flush knows exactly whose numbers changed. The RSS module carries two as well, for a different reason: a per-scope generation gives targeted invalidation for the frequent case (a publish drops only that author's, that tag's and that category's feeds) and a single ROOT generation gives an O(1) platform-wide flush for the rare, security-critical case (a suspension, a moderation removal) whose blast radius cannot be enumerated cheaply. The SEO module splits the two mechanisms rather than choosing between them: the sitemap gets a generation (a single publish can move a post between chunks, so the blast radius really is "all of it"), while per-resource metadata is invalidated by EXACT-KEY deletion — a generation per blog, per author and per tag would be a counter keyspace that grows with the platform forever and is never reclaimed, which is the unbounded store a cache must not become. The Dashboard module carries TWO generations in every key — its own and the Analytics one — because it caches a payload that CONTAINS analytics reports, and an outer cache that outlives its inner one serves numbers the same client can see are stale from another endpoint.
 * **Never load-bearing:** every cache read and write is best-effort. Redis being down must degrade a response to "uncached", never to a 500.
 
 ## 14. Background Job Strategy (BullMQ)
@@ -436,6 +438,7 @@ graph TD
         Feed[Feed & Explore Module]
         Dash[Dashboard Module]
         Rss[RSS & Distribution Module]
+        Seo[SEO & Public Metadata Module]
     end
     
     subgraph Core
@@ -461,6 +464,7 @@ graph TD
     EventBus -- Listens --> Feed
     EventBus -- Listens --> Dash
     EventBus -- Listens --> Rss
+    EventBus -- Listens --> Seo
 
     %% Feed is a leaf: it composes sibling SERVICES and nothing depends on it,
     %% so no cycle (Blog -> Feed -> Blog) can form.
@@ -486,6 +490,15 @@ graph TD
     %% through its own bounded query.
     Rss --> Feed
     Rss --> DB
+
+    %% SEO is the fourth leaf. Like RSS it borrows the Feed module's discovery
+    %% predicate rather than restating it, and it additionally calls Blog's
+    %% `canView` — because "is this page public" and "may it be indexed" are two
+    %% different questions and the platform already answers both. Nothing depends
+    %% on SEO, so neither arrow can close a cycle.
+    Seo --> Feed
+    Seo --> Blog
+    Seo --> DB
 
     Analyt --> Redis[(Redis buffer)]
     Redis -- BullMQ flush --> DB

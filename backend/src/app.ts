@@ -26,6 +26,7 @@ import { feedRoutes } from './modules/feed/feed.routes';
 import { exportRoutes } from './modules/export/export.routes';
 import { dashboardRoutes } from './modules/dashboard/dashboard.routes';
 import { rssRoutes } from './modules/rss/rss.routes';
+import { seoCrawlerRoutes, seoRoutes } from './modules/seo/seo.routes';
 import { adminRoutes, reportRoutes } from './modules/moderation/moderation.routes';
 
 const app: Application = express();
@@ -131,6 +132,21 @@ app.use('/api/v1/export', exportRoutes);
 // syndication endpoint answers a feed reader in XML, not with the platform's
 // JSON envelope. See modules/rss/rss.errors.ts.
 app.use('/api/v1/rss', rssRoutes);
+
+// Public metadata. Owns its own mount, shares no prefix with another router,
+// and is exempt from the global limiter for the same inversion `/feed` is: a
+// server-side renderer asks for metadata once per page it renders. See
+// modules/seo/seo.routes.ts.
+app.use('/api/v1/seo', seoRoutes);
+
+// Crawler documents — `/robots.txt`, `/sitemap.xml`, `/sitemap-<section>-<page>.xml`.
+//
+// Mounted at the ROOT rather than under `/api/v1`, and that is not a style
+// choice: `/robots.txt` is specified to live at the origin's root and a crawler
+// will not look anywhere else, while a sitemap must sit at or above the URLs it
+// lists. They carry their own limiter and their own XML/plain-text error
+// handler — see modules/seo/seo.routes.ts.
+app.use(seoCrawlerRoutes);
 
 // Global Error Handler
 app.use(globalErrorHandler);

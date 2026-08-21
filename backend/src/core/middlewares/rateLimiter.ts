@@ -116,6 +116,15 @@ export const bookmarkWriteLimiter = rateLimit({
  * requests it admits are overwhelmingly conditional ones the origin answers with
  * a 304 out of Redis.
  *
+ * The SEO metadata endpoints are here for the same reason as `/feed`, arriving
+ * from the rendering side. A server-side renderer asks for a page's metadata
+ * once per page it renders, so a reader browsing a dozen posts produces a dozen
+ * requests on top of everything else the app does — and under the global budget
+ * of under seven a minute, that is a site that stops rendering titles. The
+ * crawler routes (`/robots.txt`, `/sitemap*.xml`) are NOT listed here because
+ * they are not under `/api` at all and the global limiter never saw them;
+ * `seoLimiter` is applied to them directly by the SEO router.
+ *
  * `originalUrl` rather than `path`: Express strips the mount prefix from
  * `req.url` inside a `app.use('/api', ...)` middleware, so `req.path` would read
  * `/v1/search/...` here and the check would be quietly mount-dependent.
@@ -125,6 +134,7 @@ export const SELF_LIMITED_PATH_PREFIXES = [
   '/api/v1/feed',
   '/api/v1/admin',
   '/api/v1/rss',
+  '/api/v1/seo',
 ];
 
 export const hasDedicatedLimiter = (req: { originalUrl?: string }): boolean =>
@@ -459,5 +469,49 @@ export const rssLimiter = rateLimit({
   store: new RedisStore({
     sendCommand: (...args: string[]) => redis.call(args[0], ...args.slice(1)) as any,
     prefix: 'rl:rss:', // Distinct namespace for syndication counters
+  }),
+});
+
+/**
+ * Dedicated limiter for the SEO module — the metadata API and the crawler
+ * documents alike.
+ *
+ * One limiter for both, because the two workloads are the same shape: automated
+ * clients fetching public, cacheable documents on a schedule. What differs is
+ * only who the automation belongs to — a server-side renderer on one side, a
+ * search engine on the other — and neither benefits from having its own budget.
+ *
+ * 120 a minute is generous on purpose, and safe for the same reason the RSS
+ * limit is: none of these endpoints exposes anything unbounded. Metadata is one
+ * resource per request, a sitemap chunk is capped at `SITEMAP_URLS_PER_CHUNK`
+ * and a section at `SITEMAP_MAX_CHUNKS`, and every response is served from
+ * Redis and answered with a 304 on revalidation. The limiter is protecting the
+ * database from pathological polling, not the content from extraction — the
+ * content is, by definition, what the platform is asking crawlers to take.
+ *
+ * A plain 429 with the default body: unlike the RSS endpoints, these have no
+ * single media type to preserve (JSON, XML and plain text all appear here), and
+ * a crawler acts on the status code and `Retry-After` rather than the body.
+ */
+export const seoLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipInTests,
+  handler: (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Retry-After', '60');
+    res.status(429).json({
+      success: false,
+      error: {
+        code: 'TOO_MANY_REQUESTS',
+        message: 'Too many metadata requests from this IP, please slow down',
+      },
+    });
+  },
+  store: new RedisStore({
+    sendCommand: (...args: string[]) => redis.call(args[0], ...args.slice(1)) as any,
+    prefix: 'rl:seo:', // Distinct namespace for metadata and crawler counters
   }),
 });

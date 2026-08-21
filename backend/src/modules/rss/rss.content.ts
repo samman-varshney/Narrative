@@ -1,5 +1,8 @@
-import { editorParser } from '../../core/providers/editor/TiptapParser';
-import { sanitizePlainText } from '../../core/utils/sanitizeText';
+import {
+  plainTextFromEditorDocument,
+  toPlainText,
+  truncateAtWord,
+} from '../../core/utils/text';
 import { MAX_DESCRIPTION_LENGTH } from './rss.config';
 
 /**
@@ -53,7 +56,7 @@ export function hasCheapDescription(sources: {
   metaDescription: string | null;
   subtitle: string | null;
 }): boolean {
-  return Boolean(clean(sources.metaDescription) || clean(sources.subtitle));
+  return Boolean(toPlainText(sources.metaDescription) || toPlainText(sources.subtitle));
 }
 
 /**
@@ -69,62 +72,21 @@ export function hasCheapDescription(sources: {
  * say, so the renderer can omit the element instead of emitting a blank one.
  */
 export function deriveDescription(sources: DescriptionSources): string | null {
-  const seo = clean(sources.metaDescription);
-  if (seo) return truncate(seo, MAX_DESCRIPTION_LENGTH);
+  const seo = toPlainText(sources.metaDescription);
+  if (seo) return truncateAtWord(seo, MAX_DESCRIPTION_LENGTH);
 
-  const subtitle = clean(sources.subtitle);
-  if (subtitle) return truncate(subtitle, MAX_DESCRIPTION_LENGTH);
+  const subtitle = toPlainText(sources.subtitle);
+  if (subtitle) return truncateAtWord(subtitle, MAX_DESCRIPTION_LENGTH);
 
-  const body = clean(extractPlainText(sources.content));
-  return body ? truncate(body, MAX_DESCRIPTION_LENGTH) : null;
+  const body = toPlainText(plainTextFromEditorDocument(sources.content));
+  return body ? truncateAtWord(body, MAX_DESCRIPTION_LENGTH) : null;
 }
 
 /**
- * Plain text from a stored editor document.
+ * `toPlainText`, `truncateAtWord` and `plainTextFromEditorDocument` live in
+ * `core/utils/text.ts`.
  *
- * Defensive around the parser rather than trusting it: `content` is a `Json?`
- * column, so a row written by an older revision — or by hand — can hold
- * anything at all. A throw here would take down a whole feed over one bad post,
- * which is the failure mode `rss.service` is built to avoid; returning empty
- * text degrades that one item to "no description" instead.
+ * They were private to this file until the SEO module needed the identical two
+ * steps to build a meta description — the same problem, an author's raw string
+ * on its way into a document a stranger's software will parse. See that file.
  */
-function extractPlainText(content: unknown): string {
-  if (content === null || content === undefined) return '';
-  try {
-    return editorParser.extractMetadata(content).plainText;
-  } catch {
-    return '';
-  }
-}
-
-/**
- * Reduces one untrusted string to safe, single-line plain text.
- *
- * Three steps, each closing a different hole: strip markup and the contents of
- * script/style elements (`sanitizePlainText`), collapse every run of whitespace
- * — including the newlines and tabs that would otherwise reproduce a post's
- * layout inside an XML element — and trim.
- */
-function clean(value: string | null | undefined): string {
-  if (!value) return '';
-  return sanitizePlainText(value).replace(/\s+/g, ' ').trim();
-}
-
-/**
- * Shortens to `max` characters at a word boundary, with an ellipsis.
- *
- * Cutting mid-word looks like corruption in a feed reader, so the last space
- * inside the budget wins — unless there is no space anywhere near the end (a
- * long URL, a language that does not space-separate), in which case a hard cut
- * is better than returning the whole thing.
- *
- * The ellipsis is a single character, so the result never exceeds `max`.
- */
-function truncate(value: string, max: number): string {
-  if (value.length <= max) return value;
-
-  const window = value.slice(0, max - 1);
-  const lastSpace = window.lastIndexOf(' ');
-  const cut = lastSpace > max * 0.6 ? window.slice(0, lastSpace) : window;
-  return `${cut.trimEnd()}…`;
-}

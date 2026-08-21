@@ -115,6 +115,96 @@ const envSchema = z
      * the API lives somewhere else (api.example.com, a path-rewriting proxy).
      */
     RSS_SELF_BASE_URL: z.url('Must be a valid absolute URL').optional(),
+
+    // ---- SEO & Public Metadata -------------------------------------------
+    // Only the values that genuinely differ between deployments are here. The
+    // sitemap's chunk size, its TTLs and the robots ruleset are product
+    // decisions and live in `modules/seo/seo.config.ts`, for the same reason
+    // `rss.config.ts` holds its own constants: a setting that should be
+    // identical in dev and production is not configuration, it is a value with
+    // a longer name.
+
+    /**
+     * The platform's name, as it appears in `og:site_name`, the `WebSite`
+     * structured-data node and every title suffix.
+     *
+     * Configurable because a white-labelled or differently-branded deployment
+     * changes it, and because the alternative — the string `Narrative`
+     * hard-coded across a metadata resolver, a serializer and a robots file —
+     * is the kind of duplication that is only ever half-updated.
+     */
+    SEO_SITE_NAME: z.string().min(1).default('Narrative'),
+
+    /**
+     * Metadata for the pages that describe no single resource — the home page,
+     * and the last-resort fallback when a resource supplies nothing usable.
+     *
+     * The description is capped at the length search engines actually render.
+     * A longer one is not an error, it is simply truncated by the consumer, so
+     * the bound is advisory here and enforced in `seo.resolver`.
+     */
+    SEO_DEFAULT_TITLE: z.string().min(1).default('Narrative'),
+    SEO_DEFAULT_DESCRIPTION: z
+      .string()
+      .min(1)
+      .default('Narrative is a place to write, publish and read long-form writing.'),
+
+    /**
+     * Absolute URL of the fallback social preview image.
+     *
+     * Optional, and the module is careful to stay valid without it: a missing
+     * `og:image` costs a preview card its picture, while a BROKEN one — a
+     * relative path, a `data:` URI, an internal storage path — is worse than
+     * none, because it is published to every consumer that renders a link. It
+     * is validated as an absolute URL here and scheme-checked again at use.
+     */
+    SEO_DEFAULT_IMAGE: z.url('Must be a valid absolute URL').optional(),
+
+    /**
+     * The platform's own Twitter/X handle, for `twitter:site`.
+     *
+     * Optional because most deployments do not have one, and a card is
+     * perfectly valid without it. The leading `@` is required so the value is
+     * unambiguous — X treats `@narrative` and `narrative` as the same account,
+     * but the tag is specified with the `@`.
+     */
+    SEO_TWITTER_SITE: z
+      .string()
+      .regex(/^@[A-Za-z0-9_]{1,15}$/, 'Must be an @handle, e.g. @narrative')
+      .optional(),
+
+    /**
+     * Whether crawlers may index this deployment at all.
+     *
+     * The one switch in the module with real consequences, and the reason it is
+     * environment configuration rather than a constant: a staging or preview
+     * deployment serves the same public content as production, and if it is
+     * indexed it competes with production for the same queries — the classic
+     * way a staging URL ends up outranking the real site.
+     *
+     * Left unset it defaults to "only in production" (resolved in
+     * `seo.config.ts`), which is the safe reading of an ambiguous environment.
+     * When off, every page resolves to `noindex, nofollow` and `robots.txt`
+     * disallows everything — the metadata layer and the crawler directive move
+     * together, so a deployment cannot be half-indexable.
+     */
+    SEO_INDEXING_ENABLED: z.enum(['true', 'false']).optional(),
+
+    /**
+     * Absolute, publicly reachable base URL of the sitemap and `robots.txt`
+     * endpoints.
+     *
+     * Exists for the same reason `RSS_SELF_BASE_URL` does, and matters more: a
+     * sitemap index names its child sitemaps by absolute URL, and `robots.txt`
+     * names the sitemap by absolute URL. Both must be fetchable by a crawler
+     * that has never seen this API, and neither can be derived from a request
+     * header without letting a spoofed `Host` redirect crawlers off-site.
+     *
+     * Optional because the common deployment proxies `/robots.txt` and
+     * `/sitemap*.xml` to the API under the app's own origin, where `APP_URL` is
+     * already correct.
+     */
+    SEO_SITEMAP_BASE_URL: z.url('Must be a valid absolute URL').optional(),
   })
   .superRefine((data, ctx) => {
     // Resend needs a key only when it is the active transport.

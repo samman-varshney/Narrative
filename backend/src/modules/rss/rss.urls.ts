@@ -1,12 +1,23 @@
 import { env } from '../../core/config/env';
-import { DEFAULT_ITEM_COUNT, PUBLIC_PATHS } from './rss.config';
+import { appBaseUrl, encodeSegment } from '../../core/utils/publicUrls';
+import { DEFAULT_ITEM_COUNT } from './rss.config';
 import type { RssFeedScope } from './rss.types';
 
 /**
  * Every URL and every identifier RSS puts into a document.
  *
+ * ── Public page URLs live in `core/utils/publicUrls` ────────────────────────
+ * `blogUrl`, `authorUrl`, `categoryUrl` and `tagUrl` are re-exported below
+ * rather than defined here. They started in this file, and moved out when the
+ * SEO module needed the same answers for canonical tags and sitemap entries:
+ * a canonical URL that disagreed with the `<link>` in the feed would be a
+ * duplicate-content bug neither module could see from the inside. This file
+ * keeps what is genuinely RSS's — feed addresses and feed identifiers — and
+ * re-exports the shared vocabulary so nothing in this module has to know the
+ * difference.
+ *
  * ── Configured URLs, never request headers ──────────────────────────────────
- * Nothing in this file reads `req`. Public URLs are built from `APP_URL` and
+ * Nothing here reads `req`. Public URLs are built from `APP_URL` and
  * `RSS_SELF_BASE_URL`, both of which come from the environment, because the
  * alternative is a vulnerability rather than a style preference: `Host` and
  * `X-Forwarded-Host` are attacker-controlled on a public endpoint, and this
@@ -14,13 +25,21 @@ import type { RssFeedScope } from './rss.types';
  * host would poison the copy served to every subsequent subscriber, with links
  * pointing at the attacker's domain and the platform's name on the channel.
  *
- * Building from configuration makes that unrepresentable rather than guarded.
- *
  * ── Identifiers are not URLs ────────────────────────────────────────────────
  * `blogGuid` and `channelId` return `urn:` identifiers, not links. See the
  * comment on `blogGuid` for why a feed's notion of identity must survive a
  * change of address.
  */
+
+export {
+  appBaseUrl,
+  blogUrl,
+  authorUrl,
+  categoryUrl,
+  tagUrl,
+  safeHttpUrl,
+  absolutePublicUrl,
+} from '../../core/utils/publicUrls';
 
 /** The API path this module is mounted at. Kept beside the URLs it composes. */
 export const RSS_MOUNT_PATH = '/api/v1/rss';
@@ -29,15 +48,6 @@ export const RSS_MOUNT_PATH = '/api/v1/rss';
 const URN_PREFIX = 'urn:narrative';
 
 const trimTrailingSlash = (value: string): string => value.replace(/\/+$/, '');
-
-/**
- * Base URL of the reader-facing application — where a `<link>` sends a human.
- *
- * Read through a function rather than captured in a constant so a test can
- * change `APP_URL` and see the effect, and so import order never decides what a
- * link says.
- */
-export const appBaseUrl = (): string => trimTrailingSlash(env.APP_URL);
 
 /**
  * Base URL of the RSS endpoints themselves — where `<atom:link rel="self">`
@@ -51,27 +61,6 @@ export const selfBaseUrl = (): string =>
   trimTrailingSlash(env.RSS_SELF_BASE_URL ?? `${appBaseUrl()}${RSS_MOUNT_PATH}`);
 
 // ---------------------------------------------------------------------------
-// Public application URLs
-// ---------------------------------------------------------------------------
-
-/** Percent-encodes one path segment. Slugs and usernames are already safe by
- *  validation; this is the belt to that braces, so a vocabulary change upstream
- *  cannot produce a malformed URL in a public document. */
-const segment = (value: string): string => encodeURIComponent(value);
-
-export const blogUrl = (slug: string): string =>
-  `${appBaseUrl()}${PUBLIC_PATHS.blog(segment(slug))}`;
-
-export const authorUrl = (username: string): string =>
-  `${appBaseUrl()}${PUBLIC_PATHS.author(segment(username))}`;
-
-export const categoryUrl = (slug: string): string =>
-  `${appBaseUrl()}${PUBLIC_PATHS.category(segment(slug))}`;
-
-export const tagUrl = (slug: string): string =>
-  `${appBaseUrl()}${PUBLIC_PATHS.tag(segment(slug))}`;
-
-// ---------------------------------------------------------------------------
 // Feed URLs
 // ---------------------------------------------------------------------------
 
@@ -79,11 +68,11 @@ export const tagUrl = (slug: string): string =>
 export function feedPath(scope: RssFeedScope, key?: string): string {
   switch (scope) {
     case 'author':
-      return `/authors/${segment(key ?? '')}`;
+      return `/authors/${encodeSegment(key ?? '')}`;
     case 'category':
-      return `/categories/${segment(key ?? '')}`;
+      return `/categories/${encodeSegment(key ?? '')}`;
     case 'tag':
-      return `/tags/${segment(key ?? '')}`;
+      return `/tags/${encodeSegment(key ?? '')}`;
     case 'global':
     default:
       return '';
@@ -145,52 +134,3 @@ export const blogGuid = (blogId: string): string => `${URN_PREFIX}:blog:${blogId
  */
 export const channelId = (scope: RssFeedScope, subjectId: string | null): string =>
   subjectId ? `${URN_PREFIX}:feed:${scope}:${subjectId}` : `${URN_PREFIX}:feed:${scope}`;
-
-// ---------------------------------------------------------------------------
-// Untrusted URL handling
-// ---------------------------------------------------------------------------
-
-/**
- * Returns `value` if it is an absolute `http`/`https` URL, otherwise `null`.
- *
- * The scheme allowlist is the point. `BlogSEO.canonicalUrl` is author-supplied
- * and validated only as a well-formed URL — and `javascript:alert(1)` IS a
- * well-formed URL as far as a URL parser is concerned. Rendering that into a
- * public document's `<link>` would hand every subscriber's reader an executable
- * href, which several desktop readers will happily activate. Anything that is
- * not plain web addressing is refused here and the caller falls back to the
- * URL the platform derived itself.
- */
-export function safeHttpUrl(value: string | null | undefined): string | null {
-  if (!value) return null;
-  try {
-    const parsed = new URL(value);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
-    return parsed.toString();
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Resolves a stored media URL to something a feed reader on another host can
- * actually fetch.
- *
- * Absolute `http(s)` URLs — what the Cloudinary provider stores — pass through.
- * A ROOT-RELATIVE path — what the local development provider stores
- * (`/uploads/...`) — is resolved against `APP_URL`, because a relative URL in a
- * syndication document is resolved by the reader against nothing useful.
- * Anything else (a bare filename, a `data:` URI, a storage `publicId` that
- * somehow reached here) is refused, so an internal storage path can never be
- * published.
- */
-export function absolutePublicUrl(value: string | null | undefined): string | null {
-  if (!value) return null;
-  if (value.startsWith('/')) {
-    // `//host/path` is protocol-relative, i.e. an absolute reference to another
-    // origin. Not a platform-served path, so it is not resolved as one.
-    if (value.startsWith('//')) return null;
-    return `${appBaseUrl()}${value}`;
-  }
-  return safeHttpUrl(value);
-}

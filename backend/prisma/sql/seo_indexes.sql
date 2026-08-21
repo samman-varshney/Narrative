@@ -1,0 +1,99 @@
+-- SEO & Public Metadata indexes.
+--
+-- This file adds NO indexes, and that is its content: every SEO query is already
+-- served by an index another module declared, and recording which one — here,
+-- beside the other index files — is what stops a future change from dropping an
+-- index that has a dependant nobody remembered.
+--
+-- Duplicating them "for SEO" would be strictly worse than nothing: two identical
+-- indexes double the write cost of every publish, every edit and every
+-- moderation action, and buy no read benefit at all. The RSS and Feed modules
+-- reached the same conclusion for the same reason (see rss_indexes.sql).
+--
+-- Applied by `npm run db:indexes` along with the rest of prisma/sql. Running it
+-- is a no-op; keeping the file is not. Verify with `npm run seo:report`.
+
+-- ---------------------------------------------------------------------------
+-- Metadata resolution  —  GET /api/v1/seo/{blogs,authors,categories,tags}/:key
+-- ---------------------------------------------------------------------------
+-- Every metadata request is a unique-index probe followed by one projected read,
+-- and both halves are covered by constraints Prisma already declares:
+--
+--   Blog_slug_key         the identity probe (slug → id) and the projected read
+--   User_username_key     the same, for a profile
+--   Tag_slug_key          }  the term lookups
+--   Category_slug_key     }
+--   BlogSEO_blogId_key    the override row, a single-row join
+--   Media_pkey            the cover row, a single-row join
+--   UserSettings_userId_key  the `isPrivate` gate on a profile
+--   DeveloperProfile_userId_key  `sameAs` links and the X handle
+--
+-- The identity probe deserves a note: metadata is cached under a resource's
+-- DATABASE ID, not the slug in the URL, because `blogService` re-slugs a post
+-- when its title changes. That costs one probe of `Blog_slug_key` on every
+-- request, cache hit included — the trade is documented in `seo.service.ts`.
+
+-- ---------------------------------------------------------------------------
+-- Per-resource aggregates  —  "does this page have anything on it?"
+-- ---------------------------------------------------------------------------
+-- An author page and a term page are indexable only when they have eligible
+-- posts to list, so each metadata request runs one aggregate:
+--
+--   author   `blog_feed_author_public_idx` from feed_indexes.sql:
+--            ("authorId", "publishedAt" DESC, "id" DESC)
+--            WHERE status = 'PUBLISHED' AND visibility = 'PUBLIC'
+--            — the leading `authorId` is exactly this count's shape. A third
+--            dependant for that index (Feed, RSS, SEO), recorded here.
+--
+--   term     `BlogTag_tagId_idx` / `BlogCategory_categoryId_idx` from
+--            schema.prisma, probed by the resolved term id, joining back to
+--            "Blog" on its primary key.
+
+-- ---------------------------------------------------------------------------
+-- Sitemap sections  —  GET /sitemap-<section>-<page>.xml
+-- ---------------------------------------------------------------------------
+-- The `blogs` section walks PUBLISHED + PUBLIC blogs in publication order and
+-- stops at LIMIT+OFFSET, which is exactly what `blog_search_published_idx`
+-- indexes (see search_indexes.sql):
+--
+--   ("publishedAt" DESC, "id" DESC) WHERE status = 'PUBLISHED' AND visibility = 'PUBLIC'
+--
+-- Postgres scans it BACKWARDS for the oldest-first ordering the sitemap needs —
+-- a btree serves either direction — so no ascending twin is required. That index
+-- now has FOUR dependants (Search, Feed, RSS, SEO); dropping it would silently
+-- turn public discovery, every feed, every syndicated document and every sitemap
+-- into a sequential scan.
+--
+-- This is also why `seo.indexability.ts` re-exports the eligibility predicate
+-- with its status and visibility values as SQL LITERALS: Postgres can only prove
+-- a PARTIAL index applies against constants. Parameterising them would
+-- disqualify this index with nothing in the logs to notice. `seo.db.test.ts`
+-- asserts the plan can name it, so that cannot regress unobserved.
+--
+-- The `authors`, `categories` and `tags` sections aggregate over the same
+-- eligible set and group by the owning row, so they walk the same index and
+-- probe `User_pkey`, `BlogCategory_categoryId_idx` or `BlogTag_tagId_idx`.
+--
+-- ── The join that is deliberately an ANTI-JOIN ─────────────────────────────
+-- The `blogs` section excludes posts whose author pointed the canonical URL
+-- somewhere else (a sitemap lists canonical URLs; listing one that contradicts
+-- the page's own canonical tag has the platform arguing with itself). That check
+-- is `NOT EXISTS` against "BlogSEO" rather than a LEFT JOIN, and the difference
+-- is the PLAN rather than the result: a join makes an id-ordered merge with
+-- "BlogSEO" attractive, which costs the publication ordering the partial index
+-- would otherwise provide and forces a sort of the whole eligible set. The
+-- anti-join is a probe on `BlogSEO_blogId_key` per candidate, so the index walk
+-- still drives. Asserted in `seo.db.test.ts`.
+--
+-- ── The index that was deliberately NOT added ──────────────────────────────
+-- An ascending partial index — ("publishedAt" ASC, "id" ASC) WHERE published AND
+-- public — would let the sitemap avoid the backward scan. It is not added
+-- because a backward btree scan costs essentially the same as a forward one, and
+-- the index would double the write amplification of every publish to save
+-- nothing measurable. Recorded as a considered decision rather than an
+-- oversight.
+--
+-- Equally NOT added: a covering index carrying `updatedAt` for `<lastmod>`.
+-- Sitemap chunks are bounded at SITEMAP_URLS_PER_CHUNK and cached for an hour,
+-- so the heap fetches per chunk are a few thousand rows once an hour — far too
+-- little to justify a wider index on the platform's hottest table.
