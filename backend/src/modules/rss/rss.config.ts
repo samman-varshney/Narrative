@@ -111,23 +111,15 @@ export const CHANNEL_TITLES = {
 // Public URL paths (on APP_URL, the reader-facing application)
 // ---------------------------------------------------------------------------
 
-/**
- * Paths the platform's own links already use, so an RSS `<link>` lands exactly
- * where a notification email would.
- *
- * `blog` and `author` are copied from `notification/templates/index.ts`, which
- * has been building `/blog/<slug>` and `/@<username>` since the Notification
- * module shipped — RSS must not invent a second answer to "where does this post
- * live". `category` and `tag` have no prior link on the platform; these are the
- * first, and RSS_MODULE.md records that they are a choice rather than an
- * inheritance.
- */
-export const PUBLIC_PATHS = {
-  blog: (slug: string) => `/blog/${slug}`,
-  author: (username: string) => `/@${username}`,
-  category: (slug: string) => `/categories/${slug}`,
-  tag: (slug: string) => `/tags/${slug}`,
-} as const;
+// `PUBLIC_PATHS` used to live here. It now lives in `core/utils/publicUrls.ts`,
+// because RSS is no longer the only module that has to name a public page: the
+// SEO module builds canonical URLs, `og:url` values and sitemap entries from the
+// same vocabulary, and a canonical URL that disagreed with a feed's `<link>`
+// would be a duplicate-content bug neither module could see from the inside.
+//
+// RSS still reaches them through `rss.urls.ts`, which re-exports the shared
+// builders — so nothing in this module changed except where the answer is
+// defined. See `rss.urls.ts`.
 
 // ---------------------------------------------------------------------------
 // Caching

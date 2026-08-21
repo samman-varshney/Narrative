@@ -1,5 +1,5 @@
-import { createHash } from 'crypto';
 import { AppError } from '../../core/exceptions/AppError';
+import { entityTag } from '../../core/utils/httpCache';
 import { logger } from '../../core/utils/logger';
 import {
   bumpGenerations,
@@ -251,7 +251,7 @@ export class RssService {
     return {
       body,
       contentType: this.renderer.contentType,
-      etag: entityTag(body),
+      etag: entityTag(RSS_DOCUMENT_VERSION, body),
       lastModified: document.channel.lastBuildDate,
       itemCount: items.length,
     };
@@ -516,29 +516,12 @@ function newestUpdate(items: SyndicationItem[]): Date | null {
 }
 
 /**
- * A STRONG entity tag over the rendered bytes.
- *
- * Hashing the output rather than the inputs means the ETag automatically
- * accounts for everything that can change the representation — a renderer
- * change, a config change, a different item order — with no list of ingredients
- * to keep in step. It is only sound because `render` is deterministic; that
- * property is stated and tested in `rss.renderer.ts`.
- *
- * The document version is folded in as well, so an upgrade that happens to
- * produce byte-identical output for one feed still mints a distinct validator
- * and no client is told 304 about a representation from a different contract.
- *
- * Strong rather than weak (`W/`): the bytes really are identical, which is what
- * lets an intermediary serve a range request or a byte-for-byte comparison. The
- * quotes are part of the value, per RFC 9110.
+ * The ETag helper lives in `core/utils/httpCache.ts` as `entityTag`, alongside
+ * the conditional-request rules that consume it — it moved there when the SEO
+ * module needed the same hash-the-output-and-fold-in-a-version tag for its
+ * sitemaps. The reasoning it carries (why the OUTPUT is hashed rather than the
+ * inputs, why the document version is folded in, why the tag is strong) is
+ * unchanged and stated in that file.
  */
-function entityTag(body: string): string {
-  const digest = createHash('sha256')
-    .update(RSS_DOCUMENT_VERSION)
-    .update(body)
-    .digest('hex')
-    .slice(0, 32);
-  return `"${digest}"`;
-}
 
 export const rssService = new RssService();

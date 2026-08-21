@@ -1,4 +1,5 @@
 import { NotificationType } from '@prisma/client';
+import { appBaseUrl, authorUrl, blogUrl } from '../../../core/utils/publicUrls';
 import { env } from '../../../core/config/env';
 
 /**
@@ -24,7 +25,7 @@ export interface RenderedEmail {
   text: string;
 }
 
-const appUrl = () => env.APP_URL.replace(/\/$/, '');
+const appUrl = appBaseUrl;
 
 /**
  * Every email carries a preferences link. Non-transactional mail legally
@@ -71,12 +72,18 @@ const esc = (v: string): string =>
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 
-/** Encodes a value destined for a URL path segment (slug, username). */
-const escUrl = (v: string): string => encodeURIComponent(v);
+/**
+ * Public page links come from the platform's single URL vocabulary
+ * (`core/utils/publicUrls`), which percent-encodes each segment itself. These
+ * templates built `/blog/<slug>` and `/@<username>` by hand until the SEO module
+ * needed the same answers for canonical tags — an email pointing somewhere other
+ * than the canonical URL of the post it announces is a duplicate-content bug and
+ * a confusing link at once.
+ */
 
 export function renderFollowEmail(ctx: TemplateContext): RenderedEmail {
   const actor = ctx.actorName ?? 'Someone';
-  const profile = `${appUrl()}/@${escUrl(str(ctx.metadata.username, ''))}`;
+  const profile = authorUrl(str(ctx.metadata.username, ''));
   return {
     subject: `${actor} started following you`,
     ...layout(
@@ -89,7 +96,7 @@ export function renderFollowEmail(ctx: TemplateContext): RenderedEmail {
 export function renderCommentEmail(ctx: TemplateContext): RenderedEmail {
   const actor = ctx.actorName ?? 'Someone';
   const title = str(ctx.metadata.blogTitle, 'your post');
-  const link = `${appUrl()}/blog/${escUrl(str(ctx.metadata.slug, ''))}`;
+  const link = blogUrl(str(ctx.metadata.slug, ''));
   return {
     subject: `${actor} commented on ${title}`,
     ...layout(
@@ -101,7 +108,7 @@ export function renderCommentEmail(ctx: TemplateContext): RenderedEmail {
 
 export function renderReplyEmail(ctx: TemplateContext): RenderedEmail {
   const actor = ctx.actorName ?? 'Someone';
-  const link = `${appUrl()}/blog/${escUrl(str(ctx.metadata.slug, ''))}`;
+  const link = blogUrl(str(ctx.metadata.slug, ''));
   return {
     subject: `${actor} replied to your comment`,
     ...layout(
@@ -114,7 +121,7 @@ export function renderReplyEmail(ctx: TemplateContext): RenderedEmail {
 export function renderBlogPublishedEmail(ctx: TemplateContext): RenderedEmail {
   const actor = ctx.actorName ?? 'An author you follow';
   const title = str(ctx.metadata.blogTitle, 'a new post');
-  const link = `${appUrl()}/blog/${escUrl(str(ctx.metadata.slug, ''))}`;
+  const link = blogUrl(str(ctx.metadata.slug, ''));
   return {
     subject: `${actor} published ${title}`,
     ...layout(

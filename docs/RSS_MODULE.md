@@ -74,7 +74,7 @@ src/modules/rss/
     └── rss.subscriber.ts  event-driven invalidation
 ```
 
-### The pipeline
+### Request flow
 
 ```mermaid
 flowchart TD
@@ -96,6 +96,47 @@ flowchart TD
     O -- yes --> P["304 Not Modified<br/>(validators repeated, no body)"]
     O -- no --> Q["200 application/rss+xml"]
 ```
+
+### Generation pipeline
+
+What happens on a miss, as a transformation rather than as a call sequence. Each
+stage narrows what the next one is allowed to know: retrieval is the only stage
+that touches a table, building is format-agnostic, and only the renderer has ever
+heard of RSS 2.0.
+
+```mermaid
+flowchart TD
+    subgraph Retrieve["1. Retrieve — bounded, at most 4 queries"]
+        A["feed rows<br/>eligibility applied in SQL, LIMIT ≤ 50"]
+        A --> B["tags + categories<br/>one batched query each"]
+        A --> C["excerpt bodies<br/>only rows with no SEO description or subtitle"]
+    end
+
+    subgraph Build["2. Build — format-agnostic"]
+        C --> D["deriveDescription<br/>metaDescription → subtitle → body"]
+        B --> E["per item: title, canonical link, URN guid,<br/>dates, dc:creator, categories, enclosure"]
+        D --> E
+        E --> F{"item built?"}
+        F -- throws --> G["log + skip this item<br/>the other items still ship"]
+        F -- ok --> H["SyndicationDocument<br/>channel + items"]
+    end
+
+    subgraph Render["3. Render — the only format-aware step"]
+        H --> I["IFeedRenderer.render<br/>Rss20Renderer; escapeXml on every string"]
+        I --> J["XML bytes"]
+    end
+
+    J --> K["ETag = sha256(document version + bytes)"]
+    H --> L["Last-Modified = newest item updatedAt"]
+    J --> M["RenderedFeed → Redis, EX 300"]
+    K --> M
+    L --> M
+```
+
+Both best-effort stages degrade rather than fail: a taxonomy read that throws
+produces items with no `<category>` elements, and a body read that throws
+produces items with no description. Neither produces a 500, because a subscriber
+polling at that moment would receive one in place of a feed they already had.
 
 ### Layer rules
 

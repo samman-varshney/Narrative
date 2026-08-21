@@ -18,6 +18,7 @@ import { registerDashboardSubscribers } from './modules/dashboard/subscribers';
 import { registerModerationSubscribers } from './modules/moderation/subscribers';
 import { registerAuthSubscribers } from './modules/auth/subscribers';
 import { registerRssSubscribers } from './modules/rss/subscribers';
+import { registerSeoSubscribers } from './modules/seo/subscribers';
 import { startAnalyticsWorker } from './modules/analytics/analytics.worker';
 import {
   registerExportSchedules,
@@ -38,6 +39,7 @@ registerDashboardSubscribers();
 // RSS invalidation. Registered here for the same reason as every registration
 // above; it consumes Blog, User and moderation facts and emits nothing.
 registerRssSubscribers();
+registerSeoSubscribers();
 // Auth's subscriber enforces suspension on already-issued tokens (it revokes
 // sessions and primes the account-status cache); Moderation's evaluates new
 // content and files automated reports. Both are registered here, before the
